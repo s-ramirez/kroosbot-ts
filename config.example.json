@@ -1,0 +1,54 @@
+{
+  "app": {
+    "listenPort": 8788,
+    "historyLimit": 16,
+    "workspaceDir": "."
+  },
+  "brain": {
+    "mode": "openai-compatible",
+    "systemPrompt": "You are Kroosbot. Keep replies short and practical.",
+    "historyWindow": 10,
+    "echoPrefix": "Kroosbot:",
+    "tools": {
+      "enabled": true,
+      "maxSteps": 3
+    },
+    "openAiCompatible": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "model": "your-model-name",
+      "apiKey": "",
+      "temperature": 0.2,
+      "maxOutputTokens": 300,
+      "requestTimeoutMs": 60000
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "rootDir": "./memory",
+    "indexFile": "MEMORY.md",
+    "maxResults": 4,
+    "maxSnippetChars": 600,
+    "autoRemember": {
+      "enabled": true,
+      "categories": ["preference", "decision"]
+    }
+  },
+  "adapters": {
+    "discord": {
+      "enabled": false,
+      "token": "",
+      "requireMention": true,
+      "allowedChannelIds": [],
+      "mentionRoleIds": []
+    },
+    "imessage": {
+      "enabled": true,
+      "serverUrl": "http://127.0.0.1:1234",
+      "password": "change-me",
+      "webhookPath": "/imessage/webhook",
+      "requestTimeoutMs": 10000,
+      "markAsRead": false,
+      "sendTyping": true
+    }
+  }
+}
