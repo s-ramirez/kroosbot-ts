@@ -14,6 +14,12 @@ const openAiCompatibleBrainSchema = z.object({
   requestTimeoutMs: z.number().int().positive().default(60000)
 });
 
+const claudeBrainSchema = z.object({
+  apiKey: z.string().default(""),
+  model: z.string().default("claude-opus-4-6"),
+  maxOutputTokens: z.number().int().positive().default(1024)
+});
+
 const schema = z.object({
   app: z.object({
     listenPort: z.number().int().positive().default(8788),
@@ -21,11 +27,12 @@ const schema = z.object({
     workspaceDir: z.string().default(".")
   }),
   brain: z.object({
-    mode: z.enum(["echo", "openai-compatible"]).default("openai-compatible"),
+    mode: z.enum(["echo", "openai-compatible", "claude"]).default("openai-compatible"),
     systemPrompt: z.string().default("You are Kroosbot. Keep replies short and practical."),
     historyWindow: z.number().int().positive().default(10),
     echoPrefix: z.string().default("Kroosbot:"),
     openAiCompatible: openAiCompatibleBrainSchema.default({}),
+    claude: claudeBrainSchema.default({}),
     tools: z.object({
       enabled: z.boolean().default(true),
       maxSteps: z.number().int().positive().default(3)

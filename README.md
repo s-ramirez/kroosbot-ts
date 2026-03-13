@@ -50,13 +50,14 @@ This version keeps memory deliberately simple:
 
 ## Tools
 
-This version now includes a very small built-in tool framework.
+This version now includes a small `pi-tools`-style built-in tool framework.
 
 Current tools:
 
 - `memory_search`
 - `memory_write`
 - `list_files`
+- `search_files`
 - `read_file`
 
 The tools are intentionally narrow:
@@ -64,6 +65,7 @@ The tools are intentionally narrow:
 - memory tools can search and append durable notes
 - file tools are read-only
 - file tools are scoped to `app.workspaceDir`
+- tools are composed through a small builder in `src/tools/piTools.ts`
 
 Debug commands:
 
@@ -85,3 +87,35 @@ Memory behavior:
 - obvious preferences and decisions can still be auto-captured by app-side rules
 - the model is now also instructed to propose `memory_write` for durable facts worth keeping
 - `memory_write` stays approval-gated, so the model can suggest a memory without silently storing it
+
+## Evals
+
+You can run a small evaluation suite against the current model and prompt setup:
+
+```bash
+bun run evals
+```
+
+Or point at a specific suite file:
+
+```bash
+bun run evals ./evals/tool-decisions.json
+```
+
+The eval harness runs the real brain and tool loop, then reports:
+
+- which tools were called
+- whether expected tool decisions were made
+- the final answer
+- which cases passed or failed
+
+The first suite lives in `evals/tool-decisions.json` and now covers:
+
+- durable memory-write decisions
+- cases that should not be stored as memory
+- repo inspection via `search_files`
+- direct file reads via `read_file`
+- memory recall answers
+- simple chat cases where no tool should be used
+
+It is meant to be a starter benchmark for comparing local models, not just a smoke test.

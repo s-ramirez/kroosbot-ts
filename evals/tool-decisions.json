@@ -1,0 +1,124 @@
+{
+  "name": "Tool Decision Benchmark",
+  "description": "Starter benchmark for memory-write judgment, repo inspection, retrieval, and avoiding unnecessary tools.",
+  "cases": [
+    {
+      "name": "preference-memory",
+      "input": "I really like basketball.",
+      "expected": {
+        "mustCallAnyOf": ["memory_write"],
+        "mustNotCall": ["read_file", "search_files"]
+      }
+    },
+    {
+      "name": "decision-memory",
+      "input": "We decided to use Bun instead of npm for this project.",
+      "expected": {
+        "mustCallAnyOf": ["memory_write"],
+        "mustNotCall": ["read_file", "search_files"]
+      }
+    },
+    {
+      "name": "temporary-chatter-no-memory",
+      "input": "I am drinking coffee right now.",
+      "expected": {
+        "mustNotCall": ["memory_write", "read_file", "search_files"]
+      }
+    },
+    {
+      "name": "question-no-memory-write",
+      "input": "Do you remember what sport I like?",
+      "memoryNotes": [
+        {
+          "text": "I like basketball",
+          "category": "preference"
+        }
+      ],
+      "expected": {
+        "mustNotCall": ["memory_write", "read_file", "search_files"],
+        "finalAnswerContains": ["basketball"]
+      }
+    },
+    {
+      "name": "search-symbol",
+      "input": "Where is SessionKey defined?",
+      "workspaceFiles": [
+        {
+          "path": "src/store.ts",
+          "content": "export class SessionKey {\n  constructor(private readonly value: string) {}\n}\n"
+        },
+        {
+          "path": "src/other.ts",
+          "content": "export const somethingElse = true;\n"
+        }
+      ],
+      "expected": {
+        "mustCallAll": ["search_files"],
+        "mustNotCall": ["memory_write"],
+        "finalAnswerContains": ["SessionKey", "src/store.ts"]
+      }
+    },
+    {
+      "name": "read-specific-file",
+      "input": "Read package.json and tell me the package name.",
+      "workspaceFiles": [
+        {
+          "path": "package.json",
+          "content": "{\n  \"name\": \"demo-agent\",\n  \"version\": \"0.1.0\"\n}\n"
+        }
+      ],
+      "expected": {
+        "mustCallAll": ["read_file"],
+        "mustNotCall": ["memory_write"],
+        "finalAnswerContains": ["demo-agent"]
+      }
+    },
+    {
+      "name": "search-config-key",
+      "input": "Find where historyLimit is defined.",
+      "workspaceFiles": [
+        {
+          "path": "src/config.ts",
+          "content": "export const defaults = {\n  historyLimit: 16,\n  listenPort: 8788\n};\n"
+        },
+        {
+          "path": "README.md",
+          "content": "This project has configuration values.\n"
+        }
+      ],
+      "expected": {
+        "mustCallAll": ["search_files"],
+        "mustNotCall": ["memory_write"],
+        "finalAnswerContains": ["historyLimit", "src/config.ts"]
+      }
+    },
+    {
+      "name": "recall-memory",
+      "input": "What sport do I like?",
+      "memoryNotes": [
+        {
+          "text": "I like basketball",
+          "category": "preference"
+        }
+      ],
+      "expected": {
+        "finalAnswerContains": ["basketball"]
+      }
+    },
+    {
+      "name": "simple-chat-no-tools",
+      "input": "Say hello in one sentence.",
+      "expected": {
+        "mustNotCall": ["memory_write", "read_file", "search_files", "memory_search"]
+      }
+    },
+    {
+      "name": "project-detail-memory",
+      "input": "Our production bot should run on a Mac mini.",
+      "expected": {
+        "mustCallAnyOf": ["memory_write"],
+        "mustNotCall": ["read_file", "search_files"]
+      }
+    }
+  ]
+}

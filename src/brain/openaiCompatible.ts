@@ -3,7 +3,7 @@ import type { AppConfig } from "../config.js";
 import type { MemoryManager } from "../memory/manager.js";
 import type { ChatHistory, InboundMessage, OutboundMessage } from "../store.js";
 import { buildSystemPrompt, compactHistoryWithoutLatestMessage } from "./prompt.js";
-import type { Brain } from "./types.js";
+import type { Brain, ToolTraceEvent } from "./types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 
 type ChatCompletionRequest = {
@@ -20,17 +20,6 @@ type ChatCompletionResponse = {
       content?: string;
     };
   }>;
-};
-
-export type ToolTraceEvent = {
-  sessionKey: string;
-  step: number;
-  toolName: string;
-  arguments: Record<string, unknown>;
-  ok: boolean;
-  content: string;
-  requiresApproval?: boolean;
-  approvalId?: string;
 };
 
 export class OpenAiCompatibleBrain implements Brain {

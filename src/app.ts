@@ -2,10 +2,10 @@ import express from "express";
 import type { AppConfig } from "./config.js";
 import { DiscordAdapter } from "./adapters/discord.js";
 import { IMessageAdapter } from "./adapters/imessage.js";
+import { ClaudeBrain } from "./brain/claude.js";
 import { EchoBrain } from "./brain/echo.js";
 import { OpenAiCompatibleBrain } from "./brain/openaiCompatible.js";
-import type { ToolTraceEvent } from "./brain/openaiCompatible.js";
-import type { Brain } from "./brain/types.js";
+import type { Brain, ToolTraceEvent } from "./brain/types.js";
 import { extractAutoMemoryCandidate } from "./memory/autoExtract.js";
 import { MemoryManager } from "./memory/manager.js";
 import { ConversationStore, type InboundMessage } from "./store.js";
@@ -28,12 +28,9 @@ export class KroosbotApp {
     this.brain =
       config.brain.mode === "echo"
         ? new EchoBrain(config.brain.systemPrompt, config.brain.echoPrefix)
-        : new OpenAiCompatibleBrain(
-            config.brain,
-            this.memory,
-            this.tools,
-            (event) => this.recordToolTrace(event)
-          );
+        : config.brain.mode === "claude"
+          ? new ClaudeBrain(config.brain, this.memory, this.tools, (event) => this.recordToolTrace(event))
+          : new OpenAiCompatibleBrain(config.brain, this.memory, this.tools, (event) => this.recordToolTrace(event));
     this.discord = new DiscordAdapter(config.adapters.discord);
     this.imessage = new IMessageAdapter(config.adapters.imessage);
     this.expressApp.use(express.json({ limit: "2mb" }));
