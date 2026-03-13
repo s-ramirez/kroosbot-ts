@@ -20,6 +20,22 @@ const claudeBrainSchema = z.object({
   maxOutputTokens: z.number().int().positive().default(1024)
 });
 
+const jobsSchema = z.object({
+  enabled: z.boolean().default(true),
+  rootDir: z.string().default("./kroosbot-data/jobs"),
+  defaultRuntime: z.literal("pi").default("pi"),
+  defaultModel: z.string().default(""),
+  defaultTimeoutMs: z.number().int().positive().default(3600000),
+  maxConcurrentJobs: z.number().int().positive().default(1),
+  heartbeatIntervalMs: z.number().int().positive().default(15000),
+  staleHeartbeatMs: z.number().int().positive().default(120000),
+  runtimeCommand: z.string().default("pi"),
+  runtimeArgs: z.array(z.string()).default([]),
+  checks: z.object({
+    commands: z.array(z.string()).default([])
+  }).default({})
+});
+
 const schema = z.object({
   app: z.object({
     listenPort: z.number().int().positive().default(8788),
@@ -49,6 +65,7 @@ const schema = z.object({
       categories: z.array(z.enum(["preference", "decision"])).default(["preference", "decision"])
     }).default({})
   }),
+  jobs: jobsSchema.default({}),
   adapters: z.object({
     discord: z.object({
       enabled: z.boolean().default(false),

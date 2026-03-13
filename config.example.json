@@ -33,6 +33,21 @@
       "categories": ["preference", "decision"]
     }
   },
+  "jobs": {
+    "enabled": true,
+    "rootDir": "./kroosbot-data/jobs",
+    "defaultRuntime": "pi",
+    "defaultModel": "openai/your-local-model",
+    "defaultTimeoutMs": 3600000,
+    "maxConcurrentJobs": 1,
+    "heartbeatIntervalMs": 15000,
+    "staleHeartbeatMs": 120000,
+    "runtimeCommand": "pi",
+    "runtimeArgs": [],
+    "checks": {
+      "commands": ["bun run build"]
+    }
+  },
   "adapters": {
     "discord": {
       "enabled": false,

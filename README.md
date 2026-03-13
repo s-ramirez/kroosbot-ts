@@ -119,3 +119,22 @@ The first suite lives in `evals/tool-decisions.json` and now covers:
 - simple chat cases where no tool should be used
 
 It is meant to be a starter benchmark for comparing local models, not just a smoke test.
+
+## Background Jobs
+
+This version now includes a first pass at detached background coding jobs backed by `pi`.
+
+Primary commands:
+
+- `/delegate help`
+- `/delegate <json>`
+- `/jobs`
+- `/job status <id>`
+- `/job log <id>`
+- `/job cancel <id>`
+- `/job review <id>`
+- `/job approve <id>`
+- `/job reject <id>`
+- `/job retry <id>`
+
+Jobs are stored under `jobs.rootDir` and run in isolated Git worktrees on `codex/job-<id>` branches.

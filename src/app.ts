@@ -8,7 +8,9 @@ import { OpenAiCompatibleBrain } from "./brain/openaiCompatible.js";
 import type { Brain, ToolTraceEvent } from "./brain/types.js";
 import { extractAutoMemoryCandidate } from "./memory/autoExtract.js";
 import { MemoryManager } from "./memory/manager.js";
-import { ConversationStore, type InboundMessage } from "./store.js";
+import { ConversationStore, SessionKey, type InboundMessage } from "./store.js";
+import { JobSupervisor } from "./jobs/supervisor.js";
+import type { JobDelegatePayload, JobReviewDecision } from "./jobs/types.js";
 import { ToolRegistry } from "./tools/registry.js";
 
 export class KroosbotApp {
@@ -16,6 +18,7 @@ export class KroosbotApp {
   private readonly brain: Brain;
   private readonly memory: MemoryManager;
   private readonly tools: ToolRegistry;
+  private readonly jobs: JobSupervisor;
   private readonly discord: DiscordAdapter;
   private readonly imessage: IMessageAdapter;
   private readonly expressApp = express();
@@ -25,6 +28,7 @@ export class KroosbotApp {
     this.store = new ConversationStore(config.app.historyLimit);
     this.memory = new MemoryManager(config.memory);
     this.tools = ToolRegistry.createBuiltIn(config, this.memory);
+    this.jobs = new JobSupervisor(config);
     this.brain =
       config.brain.mode === "echo"
         ? new EchoBrain(config.brain.systemPrompt, config.brain.echoPrefix)
@@ -38,6 +42,7 @@ export class KroosbotApp {
 
   async start(): Promise<void> {
     await this.memory.initialize();
+    await this.jobs.initialize();
 
     this.expressApp.get("/healthz", (_req, res) => {
       res.json({ ok: true });
@@ -201,6 +206,11 @@ export class KroosbotApp {
     const text = message.text.trim();
     const lower = text.toLowerCase();
 
+    const jobReply = await this.tryHandleJobCommand(message);
+    if (jobReply) {
+      return jobReply;
+    }
+
     if (lower === "/tools") {
       const lines = this.tools.definitions().map((tool) => {
         const params = tool.parameters
@@ -296,6 +306,101 @@ export class KroosbotApp {
     };
   }
 
+  private async tryHandleJobCommand(
+    message: InboundMessage
+  ): Promise<{ text: string } | null> {
+    const text = message.text.trim();
+    const lower = text.toLowerCase();
+
+    if (lower === "/jobs") {
+      const jobs = await this.jobs.listJobs();
+      if (jobs.length === 0) {
+        return { text: "No background jobs yet." };
+      }
+      return {
+        text: jobs.slice(0, 10).map((job) =>
+          `- ${job.id} [${job.status}] ${job.title} (${job.jobBranch})`
+        ).join("\n")
+      };
+    }
+
+    if (lower === "/delegate help") {
+      return {
+        text: [
+          "Use `/delegate <json>` with a payload like:",
+          '{',
+          '  "title": "Implement job system",',
+          '  "summary": "Build the feature in the target repo.",',
+          '  "checklist": ["Add store", "Add worker"],',
+          '  "acceptanceCriteria": ["Jobs persist", "Worker can run"],',
+          '  "checkCommands": ["bun run build"],',
+          `  "workspaceDir": "${this.config.app.workspaceDir}"`,
+          '}'
+        ].join("\n")
+      };
+    }
+
+    if (lower.startsWith("/delegate ")) {
+      if (!this.config.jobs.enabled) {
+        return { text: "Jobs are disabled in config." };
+      }
+      const raw = text.slice("/delegate ".length).trim();
+      let payload: JobDelegatePayload;
+      try {
+        payload = JSON.parse(raw) as JobDelegatePayload;
+      } catch {
+        return { text: "Invalid delegate payload. Use `/delegate help` for the expected JSON shape." };
+      }
+      const job = await this.jobs.createAndStartJob(payload, message.sessionKey.toString());
+      return {
+        text: `Started job ${job.id} on branch ${job.jobBranch}.\nUse \`/job status ${job.id}\` to track it.`
+      };
+    }
+
+    const statusMatch = text.match(/^\/job\s+status\s+(\S+)\s*$/i);
+    if (statusMatch) {
+      return { text: await this.jobs.getJobStatusReport(statusMatch[1] ?? "") };
+    }
+
+    const logMatch = text.match(/^\/job\s+log\s+(\S+)\s*$/i);
+    if (logMatch) {
+      const log = await this.jobs.getJobLog(logMatch[1] ?? "");
+      return { text: log || "No worker log yet." };
+    }
+
+    const cancelMatch = text.match(/^\/job\s+cancel\s+(\S+)\s*$/i);
+    if (cancelMatch) {
+      const job = await this.jobs.cancelJob(cancelMatch[1] ?? "");
+      return { text: `Canceled job ${job.id}.` };
+    }
+
+    const retryMatch = text.match(/^\/job\s+retry\s+(\S+)\s*$/i);
+    if (retryMatch) {
+      const job = await this.jobs.retryJob(retryMatch[1] ?? "");
+      return { text: `Retried job ${job.id} on branch ${job.jobBranch}.` };
+    }
+
+    const approveMatch = text.match(/^\/job\s+approve\s+(\S+)\s*$/i);
+    if (approveMatch) {
+      const job = await this.jobs.markReviewOutcome(approveMatch[1] ?? "", "approve", "Approved by main assistant.");
+      return { text: `Approved job ${job.id}.` };
+    }
+
+    const rejectMatch = text.match(/^\/job\s+reject\s+(\S+)\s*$/i);
+    if (rejectMatch) {
+      const job = await this.jobs.markReviewOutcome(rejectMatch[1] ?? "", "reject", "Rejected by main assistant.");
+      return { text: `Rejected job ${job.id} and reset branch ${job.jobBranch} to ${job.baseCommit}.` };
+    }
+
+    const reviewMatch = text.match(/^\/job\s+review\s+(\S+)\s*$/i);
+    if (reviewMatch) {
+      const review = await this.reviewJob(reviewMatch[1] ?? "");
+      return { text: review };
+    }
+
+    return null;
+  }
+
   private async sendReply(message: InboundMessage, outbound: { text: string }): Promise<void> {
     if (message.deliveryTarget.adapter === "discord") {
       await this.discord.sendText(message, outbound);
@@ -310,6 +415,37 @@ export class KroosbotApp {
       this.toolTrace.shift();
     }
   }
+
+  private async reviewJob(jobId: string): Promise<string> {
+    const context = await this.jobs.collectReviewContext(jobId);
+    const reviewBrain = this.createReviewBrain();
+    const reviewMessage: InboundMessage = {
+      adapter: "discord",
+      chatKind: "direct",
+      messageId: `review-${jobId}-${Date.now()}`,
+      sessionKey: new SessionKey(context.job.plannerSessionKey || "job-review:synthetic"),
+      conversationId: "job-review",
+      deliveryTarget: {
+        adapter: "discord",
+        address: "job-review"
+      },
+      senderId: "main-assistant",
+      senderName: "Main Assistant",
+      text: buildReviewPrompt(context)
+    };
+    const reply = await reviewBrain.reply(reviewMessage, { turns: [] });
+    const parsed = parseReviewDecision(reply?.text ?? "");
+    await this.jobs.markReviewOutcome(jobId, parsed.decision, parsed.summary, false);
+    return `Review recommendation for ${jobId}: ${parsed.decision}\n${parsed.summary}`;
+  }
+
+  private createReviewBrain(): Brain {
+    return this.config.brain.mode === "echo"
+      ? new EchoBrain(this.config.brain.systemPrompt, this.config.brain.echoPrefix)
+      : this.config.brain.mode === "claude"
+        ? new ClaudeBrain(this.config.brain, this.memory)
+        : new OpenAiCompatibleBrain(this.config.brain, this.memory);
+  }
 }
 
 function safeJson(value: Record<string, unknown>): string {
@@ -318,4 +454,56 @@ function safeJson(value: Record<string, unknown>): string {
 
 function clampText(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars - 3).trimEnd()}...`;
+}
+
+function buildReviewPrompt(context: Awaited<ReturnType<JobSupervisor["collectReviewContext"]>>): string {
+  return [
+    "Review this background coding job and return JSON only:",
+    '{"decision":"approve|request_changes|reject","summary":"short explanation"}',
+    "",
+    `Title: ${context.job.title}`,
+    `Status: ${context.job.status}`,
+    "",
+    "Acceptance criteria:",
+    ...context.job.acceptanceCriteria.map((item) => `- ${item}`),
+    "",
+    "Checks:",
+    ...(context.job.checkResults.length > 0
+      ? context.job.checkResults.map((entry) => `- ${entry.ok ? "PASS" : "FAIL"} ${entry.command}: ${entry.output}`)
+      : ["- No checks recorded."]),
+    "",
+    `Git status:\n${context.statusShort || "(clean)"}`,
+    "",
+    `Diff stat:\n${context.diffStat || "(no diff stat)"}`,
+    "",
+    `Changed files:\n${context.changedFiles.join("\n") || "(none)"}`,
+    "",
+    `Diff excerpt:\n${clampText(context.diff || "(no diff)", 12000)}`
+  ].join("\n");
+}
+
+function parseReviewDecision(raw: string): { decision: JobReviewDecision; summary: string } {
+  const trimmed = raw.trim();
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    try {
+      const parsed = JSON.parse(trimmed.slice(first, last + 1)) as {
+        decision?: JobReviewDecision;
+        summary?: string;
+      };
+      if (parsed.decision === "approve" || parsed.decision === "request_changes" || parsed.decision === "reject") {
+        return {
+          decision: parsed.decision,
+          summary: parsed.summary?.trim() || "No review summary provided."
+        };
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return {
+    decision: "request_changes",
+    summary: trimmed || "Review output was not structured; defaulting to request_changes."
+  };
 }
