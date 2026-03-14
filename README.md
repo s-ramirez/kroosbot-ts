@@ -138,3 +138,24 @@ Primary commands:
 - `/job retry <id>`
 
 Jobs are stored under `jobs.rootDir` and run in isolated Git worktrees on `codex/job-<id>` branches.
+
+For local OpenAI-compatible backends like LM Studio, configure `pi` with a custom provider in `~/.pi/agent/models.json` and point jobs at that provider instead of using the built-in `openai` provider.
+
+Example:
+
+```json
+{
+  "providers": {
+    "lmstudio": {
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "api": "openai-completions",
+      "apiKey": "lmstudio",
+      "models": [
+        { "id": "deepseek/deepseek-r1-0528-qwen3-8b" }
+      ]
+    }
+  }
+}
+```
+
+Then set `jobs.defaultProvider` to `lmstudio` and `jobs.defaultModel` to the matching model id.

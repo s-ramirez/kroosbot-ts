@@ -2,7 +2,7 @@ import express from "express";
 import type { AppConfig } from "./config.js";
 import { DiscordAdapter } from "./adapters/discord.js";
 import { IMessageAdapter } from "./adapters/imessage.js";
-import { ClaudeBrain } from "./brain/claude.js";
+import { AgentSdkBrain } from "./brain/agentSdk.js";
 import { EchoBrain } from "./brain/echo.js";
 import { OpenAiCompatibleBrain } from "./brain/openaiCompatible.js";
 import type { Brain, ToolTraceEvent } from "./brain/types.js";
@@ -32,8 +32,8 @@ export class KroosbotApp {
     this.brain =
       config.brain.mode === "echo"
         ? new EchoBrain(config.brain.systemPrompt, config.brain.echoPrefix)
-        : config.brain.mode === "claude"
-          ? new ClaudeBrain(config.brain, this.memory, this.tools, (event) => this.recordToolTrace(event))
+        : config.brain.mode === "agent-sdk"
+          ? new AgentSdkBrain(config.brain, this.memory, this.tools, (event) => this.recordToolTrace(event))
           : new OpenAiCompatibleBrain(config.brain, this.memory, this.tools, (event) => this.recordToolTrace(event));
     this.discord = new DiscordAdapter(config.adapters.discord);
     this.imessage = new IMessageAdapter(config.adapters.imessage);
@@ -309,96 +309,104 @@ export class KroosbotApp {
   private async tryHandleJobCommand(
     message: InboundMessage
   ): Promise<{ text: string } | null> {
-    const text = message.text.trim();
-    const lower = text.toLowerCase();
+    try {
+      const text = message.text.trim();
+      const lower = text.toLowerCase();
 
-    if (lower === "/jobs") {
-      const jobs = await this.jobs.listJobs();
-      if (jobs.length === 0) {
-        return { text: "No background jobs yet." };
+      if (lower === "/jobs") {
+        const jobs = await this.jobs.listJobs();
+        if (jobs.length === 0) {
+          return { text: "No background jobs yet." };
+        }
+        return {
+          text: jobs.slice(0, 10).map((job) =>
+            `- ${job.id} [${job.status}] ${job.title} (${job.jobBranch})`
+          ).join("\n")
+        };
       }
+
+      if (lower === "/delegate help") {
+        return {
+          text: [
+            "Use `/delegate <json>` with a payload like:",
+            '{',
+            '  "title": "Implement job system",',
+            '  "summary": "Build the feature in the target repo.",',
+            '  "checklist": ["Add store", "Add worker"],',
+            '  "acceptanceCriteria": ["Jobs persist", "Worker can run"],',
+            '  "checkCommands": ["bun run build"],',
+            `  "provider": "${this.config.jobs.defaultProvider}",`,
+            `  "model": "${this.config.jobs.defaultModel || this.config.brain.openAiCompatible.model}",`,
+            `  "workspaceDir": "${this.config.app.workspaceDir}"`,
+            '}'
+          ].join("\n")
+        };
+      }
+
+      if (lower.startsWith("/delegate ")) {
+        if (!this.config.jobs.enabled) {
+          return { text: "Jobs are disabled in config." };
+        }
+        const raw = text.slice("/delegate ".length).trim();
+        let payload: JobDelegatePayload;
+        try {
+          payload = JSON.parse(raw) as JobDelegatePayload;
+        } catch {
+          return { text: "Invalid delegate payload. Use `/delegate help` for the expected JSON shape." };
+        }
+        const job = await this.jobs.createAndStartJob(payload, message.sessionKey.toString());
+        return {
+          text: `Started job ${job.id} on branch ${job.jobBranch}.\nUse \`/job status ${job.id}\` to track it.`
+        };
+      }
+
+      const statusMatch = text.match(/^\/job\s+status\s+(\S+)\s*$/i);
+      if (statusMatch) {
+        return { text: await this.jobs.getJobStatusReport(statusMatch[1] ?? "") };
+      }
+
+      const logMatch = text.match(/^\/job\s+log\s+(\S+)\s*$/i);
+      if (logMatch) {
+        const log = await this.jobs.getJobLog(logMatch[1] ?? "");
+        return { text: log || "No worker log yet." };
+      }
+
+      const cancelMatch = text.match(/^\/job\s+cancel\s+(\S+)\s*$/i);
+      if (cancelMatch) {
+        const job = await this.jobs.cancelJob(cancelMatch[1] ?? "");
+        return { text: `Canceled job ${job.id}.` };
+      }
+
+      const retryMatch = text.match(/^\/job\s+retry\s+(\S+)\s*$/i);
+      if (retryMatch) {
+        const job = await this.jobs.retryJob(retryMatch[1] ?? "");
+        return { text: `Retried job ${job.id} on branch ${job.jobBranch}.` };
+      }
+
+      const approveMatch = text.match(/^\/job\s+approve\s+(\S+)\s*$/i);
+      if (approveMatch) {
+        const job = await this.jobs.markReviewOutcome(approveMatch[1] ?? "", "approve", "Approved by main assistant.");
+        return { text: `Approved job ${job.id}.` };
+      }
+
+      const rejectMatch = text.match(/^\/job\s+reject\s+(\S+)\s*$/i);
+      if (rejectMatch) {
+        const job = await this.jobs.markReviewOutcome(rejectMatch[1] ?? "", "reject", "Rejected by main assistant.");
+        return { text: `Rejected job ${job.id} and reset branch ${job.jobBranch} to ${job.baseCommit}.` };
+      }
+
+      const reviewMatch = text.match(/^\/job\s+review\s+(\S+)\s*$/i);
+      if (reviewMatch) {
+        const review = await this.reviewJob(reviewMatch[1] ?? "");
+        return { text: review };
+      }
+
+      return null;
+    } catch (error) {
       return {
-        text: jobs.slice(0, 10).map((job) =>
-          `- ${job.id} [${job.status}] ${job.title} (${job.jobBranch})`
-        ).join("\n")
+        text: error instanceof Error ? error.message : String(error)
       };
     }
-
-    if (lower === "/delegate help") {
-      return {
-        text: [
-          "Use `/delegate <json>` with a payload like:",
-          '{',
-          '  "title": "Implement job system",',
-          '  "summary": "Build the feature in the target repo.",',
-          '  "checklist": ["Add store", "Add worker"],',
-          '  "acceptanceCriteria": ["Jobs persist", "Worker can run"],',
-          '  "checkCommands": ["bun run build"],',
-          `  "workspaceDir": "${this.config.app.workspaceDir}"`,
-          '}'
-        ].join("\n")
-      };
-    }
-
-    if (lower.startsWith("/delegate ")) {
-      if (!this.config.jobs.enabled) {
-        return { text: "Jobs are disabled in config." };
-      }
-      const raw = text.slice("/delegate ".length).trim();
-      let payload: JobDelegatePayload;
-      try {
-        payload = JSON.parse(raw) as JobDelegatePayload;
-      } catch {
-        return { text: "Invalid delegate payload. Use `/delegate help` for the expected JSON shape." };
-      }
-      const job = await this.jobs.createAndStartJob(payload, message.sessionKey.toString());
-      return {
-        text: `Started job ${job.id} on branch ${job.jobBranch}.\nUse \`/job status ${job.id}\` to track it.`
-      };
-    }
-
-    const statusMatch = text.match(/^\/job\s+status\s+(\S+)\s*$/i);
-    if (statusMatch) {
-      return { text: await this.jobs.getJobStatusReport(statusMatch[1] ?? "") };
-    }
-
-    const logMatch = text.match(/^\/job\s+log\s+(\S+)\s*$/i);
-    if (logMatch) {
-      const log = await this.jobs.getJobLog(logMatch[1] ?? "");
-      return { text: log || "No worker log yet." };
-    }
-
-    const cancelMatch = text.match(/^\/job\s+cancel\s+(\S+)\s*$/i);
-    if (cancelMatch) {
-      const job = await this.jobs.cancelJob(cancelMatch[1] ?? "");
-      return { text: `Canceled job ${job.id}.` };
-    }
-
-    const retryMatch = text.match(/^\/job\s+retry\s+(\S+)\s*$/i);
-    if (retryMatch) {
-      const job = await this.jobs.retryJob(retryMatch[1] ?? "");
-      return { text: `Retried job ${job.id} on branch ${job.jobBranch}.` };
-    }
-
-    const approveMatch = text.match(/^\/job\s+approve\s+(\S+)\s*$/i);
-    if (approveMatch) {
-      const job = await this.jobs.markReviewOutcome(approveMatch[1] ?? "", "approve", "Approved by main assistant.");
-      return { text: `Approved job ${job.id}.` };
-    }
-
-    const rejectMatch = text.match(/^\/job\s+reject\s+(\S+)\s*$/i);
-    if (rejectMatch) {
-      const job = await this.jobs.markReviewOutcome(rejectMatch[1] ?? "", "reject", "Rejected by main assistant.");
-      return { text: `Rejected job ${job.id} and reset branch ${job.jobBranch} to ${job.baseCommit}.` };
-    }
-
-    const reviewMatch = text.match(/^\/job\s+review\s+(\S+)\s*$/i);
-    if (reviewMatch) {
-      const review = await this.reviewJob(reviewMatch[1] ?? "");
-      return { text: review };
-    }
-
-    return null;
   }
 
   private async sendReply(message: InboundMessage, outbound: { text: string }): Promise<void> {
@@ -435,6 +443,18 @@ export class KroosbotApp {
     };
     const reply = await reviewBrain.reply(reviewMessage, { turns: [] });
     const parsed = parseReviewDecision(reply?.text ?? "");
+    if (parsed.decision === "request_changes") {
+      await this.jobs.markReviewOutcome(jobId, parsed.decision, parsed.summary, false);
+      const restartedJob = await this.jobs.continueJobWithReview(jobId, parsed.summary);
+      return [
+        `Review recommendation for ${jobId}: ${parsed.decision}`,
+        parsed.summary,
+        "",
+        `Automatically restarted job ${restartedJob.id} with revised instructions.`,
+        `Use \`/job status ${restartedJob.id}\` to track the next iteration.`
+      ].join("\n");
+    }
+
     await this.jobs.markReviewOutcome(jobId, parsed.decision, parsed.summary, false);
     return `Review recommendation for ${jobId}: ${parsed.decision}\n${parsed.summary}`;
   }
@@ -442,8 +462,8 @@ export class KroosbotApp {
   private createReviewBrain(): Brain {
     return this.config.brain.mode === "echo"
       ? new EchoBrain(this.config.brain.systemPrompt, this.config.brain.echoPrefix)
-      : this.config.brain.mode === "claude"
-        ? new ClaudeBrain(this.config.brain, this.memory)
+      : this.config.brain.mode === "agent-sdk"
+        ? new AgentSdkBrain(this.config.brain, this.memory)
         : new OpenAiCompatibleBrain(this.config.brain, this.memory);
   }
 }

@@ -21,7 +21,7 @@ export type ToolExecutionResult = {
 
 export interface Tool {
   readonly definition: ToolDefinition;
-  execute(args: Record<string, unknown>): Promise<ToolExecutionResult>;
+  execute(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolExecutionResult>;
 }
 
 export type ToolExecutionContext = {

@@ -33,17 +33,17 @@ export async function resetWorktreeToBase(params: {
 }
 
 export async function getDiffStat(worktreeDir: string, baseCommit: string): Promise<string> {
-  const { stdout } = await runGit(worktreeDir, ["diff", "--stat", `${baseCommit}..HEAD`]);
+  const { stdout } = await runGit(worktreeDir, ["diff", "--stat", baseCommit]);
   return stdout.trim();
 }
 
 export async function getChangedFiles(worktreeDir: string, baseCommit: string): Promise<string[]> {
-  const { stdout } = await runGit(worktreeDir, ["diff", "--name-only", `${baseCommit}..HEAD`]);
+  const { stdout } = await runGit(worktreeDir, ["diff", "--name-only", baseCommit]);
   return stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
 export async function getDiff(worktreeDir: string, baseCommit: string): Promise<string> {
-  const { stdout } = await runGit(worktreeDir, ["diff", "--unified=2", `${baseCommit}..HEAD`], 20000);
+  const { stdout } = await runGit(worktreeDir, ["diff", "--unified=2", baseCommit], 20000);
   return stdout.trim();
 }
 

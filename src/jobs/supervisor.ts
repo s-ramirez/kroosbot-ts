@@ -8,6 +8,18 @@ import type { JobDelegatePayload, JobRecord, JobReviewDecision, JobReviewOutcome
 
 export class JobSupervisor {
   private readonly store: JobStore;
+  private readonly maxAutoReviewIterations = 2;
+  private readonly statusTimeFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZoneName: "short"
+  });
 
   constructor(private readonly config: AppConfig) {
     this.store = new JobStore(path.resolve(config.jobs.rootDir));
@@ -49,7 +61,7 @@ export class JobSupervisor {
       plannerSessionKey,
       runtime: "pi",
       modelConfig: {
-        provider: payload.provider ?? "openai",
+        provider: payload.provider ?? this.config.jobs.defaultProvider,
         model: payload.model ?? (this.config.jobs.defaultModel || this.config.brain.openAiCompatible.model),
         apiKey: payload.apiKey || this.config.brain.openAiCompatible.apiKey,
         baseUrl: payload.baseUrl || this.config.brain.openAiCompatible.baseUrl,
@@ -66,7 +78,8 @@ export class JobSupervisor {
       allowedScope: payload.allowedScope ?? [],
       outOfScope: payload.outOfScope ?? [],
       checklist: payload.checklist ?? [],
-      checkResults: []
+      checkResults: [],
+      reviewIterationCount: 0
     };
 
     await this.store.createJob(record);
@@ -119,12 +132,29 @@ export class JobSupervisor {
       worktreeDir: job.worktreeDir,
       baseCommit: job.baseCommit
     });
+    const refreshedProvider = this.config.jobs.defaultProvider;
+    const refreshedModel = this.config.jobs.defaultModel || this.config.brain.openAiCompatible.model;
+    const refreshedApiKey = this.config.brain.openAiCompatible.apiKey;
+    const refreshedBaseUrl = this.config.brain.openAiCompatible.baseUrl;
     job.status = "queued";
     job.resultSummary = undefined;
     job.checkResults = [];
     job.reviewOutcome = undefined;
+    job.modelConfig = {
+      provider: refreshedProvider,
+      model: refreshedModel,
+      apiKey: refreshedApiKey,
+      baseUrl: refreshedBaseUrl,
+      runtimeCommand: this.config.jobs.runtimeCommand,
+      runtimeArgs: this.config.jobs.runtimeArgs
+    };
+    job.checkCommands = [...this.config.jobs.checks.commands];
     await this.store.saveJob(job);
-    await this.store.appendEvent(job.id, "job_created", "Retrying job from clean reset state");
+    await this.store.appendEvent(
+      job.id,
+      "job_created",
+      `Retrying job from clean reset state with provider=${refreshedProvider} model=${refreshedModel}`
+    );
     return this.startJob(job.id);
   }
 
@@ -166,6 +196,33 @@ export class JobSupervisor {
     return job;
   }
 
+  async continueJobWithReview(id: string, reviewSummary: string): Promise<JobRecord> {
+    await this.enforceConcurrency();
+    const job = await this.requireJob(id);
+    const reviewIterationCount = job.reviewIterationCount ?? 0;
+    if (reviewIterationCount >= this.maxAutoReviewIterations) {
+      throw new Error(
+        `Auto review iteration limit reached (${this.maxAutoReviewIterations}). Review and delegate a fresh job or retry manually.`
+      );
+    }
+
+    job.planDocument = appendReviewFeedback(job.planDocument, reviewSummary, reviewIterationCount + 1);
+    job.reviewIterationCount = reviewIterationCount + 1;
+    job.status = "queued";
+    job.resultSummary = undefined;
+    job.checkResults = [];
+    job.reviewOutcome = undefined;
+    await this.store.writePlan(job.id, job.planDocument);
+    await this.store.saveJob(job);
+    await this.store.appendEvent(
+      job.id,
+      "plan_revised",
+      `Main assistant requested changes and restarted the worker (iteration ${job.reviewIterationCount}).`,
+      { reviewSummary }
+    );
+    return this.startJob(job.id);
+  }
+
   async listJobs(): Promise<JobRecord[]> {
     await this.reconcileRunningJobs();
     return this.store.listJobs();
@@ -180,10 +237,18 @@ export class JobSupervisor {
     const job = await this.requireJob(id);
     const events = await this.store.readRecentEvents(id, 8);
     const checks = job.checkResults.length > 0
-      ? job.checkResults.map((entry) => `- ${entry.ok ? "PASS" : "FAIL"} ${entry.command} (exit ${entry.exitCode})`).join("\n")
+      ? job.checkResults
+        .map((entry) => {
+          const startedAt = this.formatTimestamp(entry.startedAt);
+          const finishedAt = this.formatTimestamp(entry.finishedAt);
+          return `- ${entry.ok ? "PASS" : "FAIL"} ${entry.command} (exit ${entry.exitCode}; ${startedAt} -> ${finishedAt})`;
+        })
+        .join("\n")
       : "No checks recorded.";
     const eventText = events.length > 0
-      ? events.map((event) => `- ${event.at} ${event.type}${event.message ? `: ${event.message}` : ""}`).join("\n")
+      ? events
+        .map((event) => `- ${this.formatTimestamp(event.at)} ${event.type}${event.message ? `: ${event.message}` : ""}`)
+        .join("\n")
       : "No recent events.";
     return [
       `Job ${job.id}: ${job.title}`,
@@ -192,7 +257,10 @@ export class JobSupervisor {
       `Worktree: ${job.worktreeDir}`,
       `Branch: ${job.jobBranch}`,
       `Base: ${job.baseBranch} @ ${job.baseCommit}`,
-      `Last heartbeat: ${job.lastHeartbeatAt ?? "never"}`,
+      `Runtime: ${job.runtime}`,
+      `Model: ${job.modelConfig.provider}/${job.modelConfig.model}`,
+      `Review iterations: ${job.reviewIterationCount ?? 0}/${this.maxAutoReviewIterations}`,
+      `Last heartbeat: ${job.lastHeartbeatAt ? this.formatTimestamp(job.lastHeartbeatAt) : "never"}`,
       job.resultSummary ? `Summary: ${job.resultSummary}` : null,
       "",
       `Checks:`,
@@ -255,6 +323,25 @@ export class JobSupervisor {
       await this.store.saveJob(job);
     }
   }
+
+  private formatTimestamp(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return this.statusTimeFormatter.format(date);
+  }
+}
+
+function appendReviewFeedback(planDocument: string, reviewSummary: string, iteration: number): string {
+  return [
+    planDocument.trim(),
+    "",
+    `## Review Feedback Revision ${iteration}`,
+    "",
+    "The main assistant reviewed the previous result and requested these concrete changes:",
+    reviewSummary.trim(),
+    "",
+    "Update the existing worktree changes to satisfy this review feedback before stopping again."
+  ].join("\n");
 }
 
 function renderPlanDocument(payload: JobDelegatePayload): string {

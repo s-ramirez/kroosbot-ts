@@ -14,16 +14,15 @@ const openAiCompatibleBrainSchema = z.object({
   requestTimeoutMs: z.number().int().positive().default(60000)
 });
 
-const claudeBrainSchema = z.object({
-  apiKey: z.string().default(""),
-  model: z.string().default("claude-opus-4-6"),
-  maxOutputTokens: z.number().int().positive().default(1024)
+const agentSdkBrainSchema = z.object({
+  model: z.string().default("")
 });
 
 const jobsSchema = z.object({
   enabled: z.boolean().default(true),
   rootDir: z.string().default("./kroosbot-data/jobs"),
   defaultRuntime: z.literal("pi").default("pi"),
+  defaultProvider: z.string().default("openai"),
   defaultModel: z.string().default(""),
   defaultTimeoutMs: z.number().int().positive().default(3600000),
   maxConcurrentJobs: z.number().int().positive().default(1),
@@ -43,12 +42,12 @@ const schema = z.object({
     workspaceDir: z.string().default(".")
   }),
   brain: z.object({
-    mode: z.enum(["echo", "openai-compatible", "claude"]).default("openai-compatible"),
+    mode: z.enum(["echo", "openai-compatible", "agent-sdk"]).default("openai-compatible"),
     systemPrompt: z.string().default("You are Kroosbot. Keep replies short and practical."),
     historyWindow: z.number().int().positive().default(10),
     echoPrefix: z.string().default("Kroosbot:"),
     openAiCompatible: openAiCompatibleBrainSchema.default({}),
-    claude: claudeBrainSchema.default({}),
+    agentSdk: agentSdkBrainSchema.default({}),
     tools: z.object({
       enabled: z.boolean().default(true),
       maxSteps: z.number().int().positive().default(3)

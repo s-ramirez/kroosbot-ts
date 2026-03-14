@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { AppConfig } from "../../config.js";
 import { JobStore } from "../store.js";
+import { getChangedFiles, getStatusShort } from "../git.js";
 import type { JobCheckResult, JobRecord } from "../types.js";
 
 export class PiJobRunner {
@@ -37,8 +38,17 @@ export class PiJobRunner {
     const env: NodeJS.ProcessEnv = {
       ...process.env
     };
-    if (job.modelConfig.apiKey) env.OPENAI_API_KEY = job.modelConfig.apiKey;
+    const resolvedApiKey =
+      job.modelConfig.apiKey?.trim() ||
+      (job.modelConfig.provider === "openai" && job.modelConfig.baseUrl ? "local-openai" : "");
+    if (resolvedApiKey) {
+      env.OPENAI_API_KEY = resolvedApiKey;
+    }
     if (job.modelConfig.baseUrl) env.OPENAI_BASE_URL = job.modelConfig.baseUrl;
+    await this.store.appendLog(
+      job.id,
+      `Using provider=${job.modelConfig.provider} model=${job.modelConfig.model} baseUrl=${job.modelConfig.baseUrl ?? "(default)"} apiKey=${resolvedApiKey ? "[set]" : "[missing]"}\n`
+    );
 
     const child = spawn(job.modelConfig.runtimeCommand, args, {
       cwd: job.worktreeDir,
@@ -82,6 +92,27 @@ export class PiJobRunner {
       };
     }
 
+    const changedFiles = await getChangedFiles(job.worktreeDir, job.baseCommit);
+    const statusShort = await getStatusShort(job.worktreeDir);
+    if (changedFiles.length === 0) {
+      const summary = clampText(
+        [
+          "pi completed without producing any file changes.",
+          "The task may already be satisfied, or the worker stopped early.",
+          stdout.trim() ? `Worker output:\n${stdout.trim()}` : null,
+          statusShort ? `Git status:\n${statusShort}` : null
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        3000
+      );
+      return {
+        status: "blocked",
+        summary,
+        checks
+      };
+    }
+
     const summary = clampText(stdout.trim() || "pi completed successfully.", 3000);
     return { status: "ready_for_review", summary, checks };
   }
@@ -101,6 +132,7 @@ function buildWorkerPrompt(job: JobRecord): string {
     `You are executing a background coding job in an isolated git worktree.`,
     `Follow the plan exactly. Do not redefine scope.`,
     `If you are blocked, explain the blocker clearly in your final message.`,
+    `If the repository already satisfies the plan, say that explicitly in your final message instead of pretending work was done.`,
     "",
     `Job: ${job.title}`,
     `Workspace: ${job.worktreeDir}`,

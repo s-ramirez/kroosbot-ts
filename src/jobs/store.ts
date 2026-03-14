@@ -3,7 +3,11 @@ import path from "node:path";
 import type { JobEvent, JobEventType, JobRecord, JobReviewOutcome } from "./types.js";
 
 export class JobStore {
-  constructor(private readonly rootDir: string) {}
+  private readonly rootDir: string;
+
+  constructor(rootDir: string) {
+    this.rootDir = path.resolve(rootDir);
+  }
 
   async initialize(): Promise<void> {
     await fs.mkdir(this.rootDir, { recursive: true });
@@ -75,6 +79,10 @@ export class JobStore {
 
   async writeReview(id: string, markdown: string): Promise<void> {
     await fs.writeFile(this.reviewFilePath(id), markdown, "utf8");
+  }
+
+  async writePlan(id: string, markdown: string): Promise<void> {
+    await fs.writeFile(this.planFilePath(id), markdown, "utf8");
   }
 
   async readPlan(id: string): Promise<string> {

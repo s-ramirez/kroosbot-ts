@@ -61,10 +61,12 @@ export type JobRecord = {
   outOfScope: string[];
   checklist: string[];
   checkResults: JobCheckResult[];
+  reviewIterationCount?: number;
 };
 
 export type JobEventType =
   | "job_created"
+  | "plan_revised"
   | "worker_started"
   | "heartbeat"
   | "step_note"
