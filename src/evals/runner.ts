@@ -56,6 +56,7 @@ async function runEvalCase(config: AppConfig, testCase: EvalSuite["cases"][numbe
       evalConfig.brain,
       memory,
       tools,
+      [],
       (event) => toolTrace.push(event)
     );
 

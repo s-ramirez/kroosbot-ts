@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AppConfig } from "../config.js";
 import type { MemoryManager } from "../memory/manager.js";
+import type { SkillDefinition } from "../skills/types.js";
 import type { ChatHistory, InboundMessage, OutboundMessage } from "../store.js";
 import { buildSystemPrompt, compactHistoryWithoutLatestMessage } from "./prompt.js";
 import type { Brain, ToolTraceEvent } from "./types.js";
@@ -32,6 +33,7 @@ export class OpenAiCompatibleBrain implements Brain {
     config: AppConfig["brain"],
     private readonly memoryManager?: MemoryManager,
     private readonly tools?: ToolRegistry,
+    private readonly skills: SkillDefinition[] = [],
     private readonly onToolTrace?: (event: ToolTraceEvent) => void
   ) {
     this.cfg = config.openAiCompatible;
@@ -143,7 +145,8 @@ export class OpenAiCompatibleBrain implements Brain {
             this.systemPrompt,
             message,
             memoryResults ?? [],
-            this.toolsEnabled() ? this.tools?.definitions() ?? [] : []
+            this.toolsEnabled() ? this.tools?.definitions() ?? [] : [],
+            this.skills
           )
         },
         ...compactHistoryWithoutLatestMessage(history, message, this.historyWindow),

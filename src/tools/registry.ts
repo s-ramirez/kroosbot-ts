@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config.js";
+import type { JobSupervisor } from "../jobs/supervisor.js";
 import type { MemoryManager } from "../memory/manager.js";
 import { createPiTools } from "./piTools.js";
 import type {
@@ -20,8 +21,15 @@ export class ToolRegistry {
     }
   }
 
-  static createBuiltIn(config: AppConfig, memory: MemoryManager): ToolRegistry {
-    return new ToolRegistry(createPiTools(config, memory));
+  static createBuiltIn(
+    config: AppConfig,
+    memory: MemoryManager,
+    options?: {
+      jobs?: JobSupervisor;
+      reviewJob?: (jobId: string) => Promise<string>;
+    }
+  ): ToolRegistry {
+    return new ToolRegistry(createPiTools(config, memory, options));
   }
 
   definitions(): ToolDefinition[] {
@@ -53,7 +61,7 @@ export class ToolRegistry {
     }
 
     try {
-      return await tool.execute(args);
+      return await tool.execute(args, context);
     } catch (error) {
       return {
         ok: false,
@@ -83,7 +91,7 @@ export class ToolRegistry {
 
     this.pendingApprovals.delete(id);
     try {
-      const result = await tool.execute(pending.arguments);
+      const result = await tool.execute(pending.arguments, { sessionKey: pending.sessionKey });
       return { ...result, toolName: pending.toolName };
     } catch (error) {
       return {

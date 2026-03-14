@@ -3,6 +3,7 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { MemoryManager } from "../memory/manager.js";
+import type { SkillDefinition } from "../skills/types.js";
 import type { ChatHistory, InboundMessage, OutboundMessage } from "../store.js";
 import { buildSystemPrompt, compactHistoryWithoutLatestMessage } from "./prompt.js";
 import type { Brain, ToolTraceEvent } from "./types.js";
@@ -21,6 +22,7 @@ export class AgentSdkBrain implements Brain {
     config: AppConfig["brain"],
     private readonly memoryManager?: MemoryManager,
     tools?: ToolRegistry,
+    private readonly skills: SkillDefinition[] = [],
     private readonly onToolTrace?: (event: ToolTraceEvent) => void
   ) {
     this.cfg = config.agentSdk;
@@ -41,7 +43,8 @@ export class AgentSdkBrain implements Brain {
       this.systemPrompt,
       message,
       memoryResults ?? [],
-      [] // tools are handled via MCP, not injected as text
+      [], // tools are handled via MCP, not injected as text
+      this.skills
     );
 
     const historyMessages = compactHistoryWithoutLatestMessage(history, message, this.historyWindow);
@@ -63,7 +66,8 @@ export class AgentSdkBrain implements Brain {
     const options: Parameters<typeof query>[0]["options"] = {
       systemPrompt: systemPromptText,
       maxTurns: this.mcpServer ? this.toolConfig.maxSteps + 1 : 1,
-      permissionMode: "dontAsk",
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
       ...(this.cfg.model ? { model: this.cfg.model } : {}),
       ...(this.mcpServer ? { mcpServers: { "kroosbot-tools": this.mcpServer } } : {})
     };

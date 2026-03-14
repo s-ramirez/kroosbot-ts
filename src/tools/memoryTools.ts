@@ -25,7 +25,7 @@ class MemorySearchTool implements Tool {
 
   constructor(private readonly memory: MemoryManager) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: { sessionKey: string }): Promise<ToolExecutionResult> {
     const query = requiredString(args.query, "query");
     const results = await this.memory.search(query);
     if (results.length === 0) {
@@ -61,7 +61,7 @@ class MemoryWriteTool implements Tool {
 
   constructor(private readonly memory: MemoryManager) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: { sessionKey: string }): Promise<ToolExecutionResult> {
     const text = requiredString(args.text, "text");
     const category = optionalString(args.category);
     const targetPath = await this.memory.appendNote({ text, category });

@@ -11,6 +11,8 @@ import { MemoryManager } from "./memory/manager.js";
 import { ConversationStore, SessionKey, type InboundMessage } from "./store.js";
 import { JobSupervisor } from "./jobs/supervisor.js";
 import type { JobDelegatePayload, JobReviewDecision } from "./jobs/types.js";
+import { createCoreSkills } from "./skills/registry.js";
+import type { SkillDefinition } from "./skills/types.js";
 import { ToolRegistry } from "./tools/registry.js";
 
 export class KroosbotApp {
@@ -19,6 +21,7 @@ export class KroosbotApp {
   private readonly memory: MemoryManager;
   private readonly tools: ToolRegistry;
   private readonly jobs: JobSupervisor;
+  private readonly skills: SkillDefinition[];
   private readonly discord: DiscordAdapter;
   private readonly imessage: IMessageAdapter;
   private readonly expressApp = express();
@@ -27,14 +30,18 @@ export class KroosbotApp {
   constructor(private readonly config: AppConfig) {
     this.store = new ConversationStore(config.app.historyLimit);
     this.memory = new MemoryManager(config.memory);
-    this.tools = ToolRegistry.createBuiltIn(config, this.memory);
     this.jobs = new JobSupervisor(config);
+    this.skills = createCoreSkills(config);
+    this.tools = ToolRegistry.createBuiltIn(config, this.memory, {
+      jobs: this.jobs,
+      reviewJob: (jobId) => this.reviewJob(jobId)
+    });
     this.brain =
       config.brain.mode === "echo"
         ? new EchoBrain(config.brain.systemPrompt, config.brain.echoPrefix)
         : config.brain.mode === "agent-sdk"
-          ? new AgentSdkBrain(config.brain, this.memory, this.tools, (event) => this.recordToolTrace(event))
-          : new OpenAiCompatibleBrain(config.brain, this.memory, this.tools, (event) => this.recordToolTrace(event));
+          ? new AgentSdkBrain(config.brain, this.memory, this.tools, this.skills, (event) => this.recordToolTrace(event))
+          : new OpenAiCompatibleBrain(config.brain, this.memory, this.tools, this.skills, (event) => this.recordToolTrace(event));
     this.discord = new DiscordAdapter(config.adapters.discord);
     this.imessage = new IMessageAdapter(config.adapters.imessage);
     this.expressApp.use(express.json({ limit: "2mb" }));
@@ -463,8 +470,8 @@ export class KroosbotApp {
     return this.config.brain.mode === "echo"
       ? new EchoBrain(this.config.brain.systemPrompt, this.config.brain.echoPrefix)
       : this.config.brain.mode === "agent-sdk"
-        ? new AgentSdkBrain(this.config.brain, this.memory)
-        : new OpenAiCompatibleBrain(this.config.brain, this.memory);
+        ? new AgentSdkBrain(this.config.brain, this.memory, undefined, this.skills)
+        : new OpenAiCompatibleBrain(this.config.brain, this.memory, undefined, this.skills);
   }
 }
 

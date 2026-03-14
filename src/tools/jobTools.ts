@@ -1,6 +1,6 @@
 import type { JobSupervisor } from "../jobs/supervisor.js";
 import type { JobDelegatePayload } from "../jobs/types.js";
-import type { Tool, ToolExecutionResult } from "./types.js";
+import type { Tool, ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { optionalString, requiredString } from "./shared.js";
 
 export function createJobTools(
@@ -42,7 +42,7 @@ class DelegateJobTool implements Tool {
 
   constructor(private readonly jobs: JobSupervisor) {}
 
-  async execute(args: Record<string, unknown>, context): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const payload: JobDelegatePayload = {
       title: requiredString(args.title, "title"),
       summary: requiredString(args.summary, "summary"),
@@ -73,7 +73,7 @@ class ListJobsTool implements Tool {
 
   constructor(private readonly jobs: JobSupervisor) {}
 
-  async execute(): Promise<ToolExecutionResult> {
+  async execute(_args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const jobs = await this.jobs.listJobs();
     if (jobs.length === 0) {
       return { ok: true, content: "No background jobs yet." };
@@ -99,7 +99,7 @@ class GetJobStatusTool implements Tool {
 
   constructor(private readonly jobs: JobSupervisor) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const jobId = requiredString(args.job_id, "job_id");
     return { ok: true, content: await this.jobs.getJobStatusReport(jobId) };
   }
@@ -117,7 +117,7 @@ class GetJobLogTool implements Tool {
 
   constructor(private readonly jobs: JobSupervisor) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const jobId = requiredString(args.job_id, "job_id");
     const maxCharsRaw = optionalString(args.max_chars);
     const maxChars = maxCharsRaw ? Number.parseInt(maxCharsRaw, 10) : 4000;
@@ -139,7 +139,7 @@ class ReviewJobTool implements Tool {
 
   constructor(private readonly reviewJob: (jobId: string) => Promise<string>) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const jobId = requiredString(args.job_id, "job_id");
     return { ok: true, content: await this.reviewJob(jobId) };
   }
@@ -156,7 +156,7 @@ class ApproveJobTool implements Tool {
 
   constructor(private readonly jobs: JobSupervisor) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const jobId = requiredString(args.job_id, "job_id");
     const job = await this.jobs.markReviewOutcome(jobId, "approve", "Approved by main assistant.");
     return { ok: true, content: `Approved job ${job.id}.` };
@@ -174,7 +174,7 @@ class RejectJobTool implements Tool {
 
   constructor(private readonly jobs: JobSupervisor) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const jobId = requiredString(args.job_id, "job_id");
     const job = await this.jobs.markReviewOutcome(jobId, "reject", "Rejected by main assistant.");
     return { ok: true, content: `Rejected job ${job.id} and reset branch ${job.jobBranch} to ${job.baseCommit}.` };
@@ -192,7 +192,7 @@ class RetryJobTool implements Tool {
 
   constructor(private readonly jobs: JobSupervisor) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const jobId = requiredString(args.job_id, "job_id");
     const job = await this.jobs.retryJob(jobId);
     return { ok: true, content: `Retried job ${job.id} on branch ${job.jobBranch}.` };

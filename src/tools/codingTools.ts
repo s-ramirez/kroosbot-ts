@@ -26,7 +26,7 @@ class ListFilesTool implements Tool {
 
   constructor(private readonly workspaceDir: string) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: { sessionKey: string }): Promise<ToolExecutionResult> {
     const requestedPath = optionalString(args.path) ?? ".";
     const targetDir = resolveWorkspacePath(this.workspaceDir, requestedPath);
     const entries = await fs.readdir(targetDir, { withFileTypes: true });
@@ -63,7 +63,7 @@ class SearchFilesTool implements Tool {
 
   constructor(private readonly workspaceDir: string) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: { sessionKey: string }): Promise<ToolExecutionResult> {
     const query = requiredString(args.query, "query");
     const requestedPath = optionalString(args.path) ?? ".";
     const targetPath = resolveWorkspacePath(this.workspaceDir, requestedPath);
@@ -119,7 +119,7 @@ class ReadFileTool implements Tool {
 
   constructor(private readonly workspaceDir: string) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, _context: { sessionKey: string }): Promise<ToolExecutionResult> {
     const requestedPath = requiredString(args.path, "path");
     const targetPath = resolveWorkspacePath(this.workspaceDir, requestedPath);
     const stat = await fs.stat(targetPath);

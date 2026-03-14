@@ -1,12 +1,14 @@
 import type { ChatHistory, InboundMessage } from "../store.js";
 import type { MemorySearchResult } from "../memory/types.js";
+import type { SkillDefinition } from "../skills/types.js";
 import type { ToolDefinition } from "../tools/types.js";
 
 export function buildSystemPrompt(
   systemPrompt: string,
   message: InboundMessage,
   memoryResults: MemorySearchResult[] = [],
-  tools: ToolDefinition[] = []
+  tools: ToolDefinition[] = [],
+  skills: SkillDefinition[] = []
 ): string {
   const base =
     systemPrompt.trim() ||
@@ -47,7 +49,13 @@ export function buildSystemPrompt(
           })
           .join("\n")}\n\nTool calling rules:\nIf you need a tool, reply with JSON only in this exact shape:\n{"type":"tool_call","name":"tool_name","arguments":{"key":"value"}}\nDo not add markdown fences or any extra text when making a tool call.\nIf you already have enough information, reply with the final answer directly.`
       : "";
-  return `${base}\n\nOutput rules:\n${outputRules}\n\nMemory policy:\n${memoryPolicy}\n\nRuntime context:\n${buildContextPreamble(message)}${memoryBlock}${toolBlock}`;
+  const skillBlock =
+    skills.length > 0
+      ? `\n\nSkills:\n${skills
+          .map((skill) => `- ${skill.name}: ${skill.description}\n${skill.instructions}`)
+          .join("\n\n")}`
+      : "";
+  return `${base}\n\nOutput rules:\n${outputRules}\n\nMemory policy:\n${memoryPolicy}\n\nRuntime context:\n${buildContextPreamble(message)}${memoryBlock}${skillBlock}${toolBlock}`;
 }
 
 export function buildContextPreamble(message: InboundMessage): string {
