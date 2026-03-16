@@ -50,7 +50,7 @@ const schema = z.object({
   }),
   brain: z.object({
     mode: z.enum(["echo", "openai-compatible", "agent-sdk"]).default("openai-compatible"),
-    systemPrompt: z.string().default("You are Kroosbot. Keep replies short and practical."),
+    systemPrompt: z.string().default("You are Kroosbot. Be practical, truthful, and careful with actions."),
     historyWindow: z.number().int().positive().default(10),
     echoPrefix: z.string().default("Kroosbot:"),
     openAiCompatible: openAiCompatibleBrainSchema.default({}),

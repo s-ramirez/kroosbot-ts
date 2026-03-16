@@ -6,7 +6,7 @@
   },
   "brain": {
     "mode": "openai-compatible",
-    "systemPrompt": "You are Kroosbot. Keep replies short and practical.",
+    "systemPrompt": "You are Kroosbot. Be practical, truthful, and careful with actions.",
     "historyWindow": 10,
     "echoPrefix": "Kroosbot:",
     "tools": {

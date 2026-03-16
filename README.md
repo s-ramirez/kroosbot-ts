@@ -64,6 +64,8 @@ Use it for:
 
 This keeps the assistant's "self" editable in the workspace, similar in spirit to OpenClaw.
 
+`brain.systemPrompt` still exists, but it should stay small and stable. `SOUL.md` is now the main living personality layer.
+
 ## Skills
 
 Workspace skills now live under `skills/`.
