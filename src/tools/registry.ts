@@ -29,6 +29,7 @@ export class ToolRegistry {
       jobs?: JobSupervisor;
       plans?: PlanManager;
       reviewJob?: (jobId: string) => Promise<string>;
+      extraTools?: Tool[];
     }
   ): ToolRegistry {
     return new ToolRegistry(createPiTools(config, memory, options));

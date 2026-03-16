@@ -12,18 +12,19 @@ import { ConversationStore, SessionKey, type InboundMessage } from "./store.js";
 import { JobSupervisor } from "./jobs/supervisor.js";
 import type { JobDelegatePayload, JobReviewDecision } from "./jobs/types.js";
 import { PlanManager } from "./plans/manager.js";
+import { loadWorkspaceSkills } from "./skills/loader.js";
 import { createCoreSkills } from "./skills/registry.js";
 import type { SkillDefinition } from "./skills/types.js";
 import { ToolRegistry } from "./tools/registry.js";
 
 export class KroosbotApp {
   private readonly store: ConversationStore;
-  private readonly brain: Brain;
+  private brain!: Brain;
   private readonly memory: MemoryManager;
-  private readonly tools: ToolRegistry;
+  private tools!: ToolRegistry;
   private readonly jobs: JobSupervisor;
   private readonly plans: PlanManager;
-  private readonly skills: SkillDefinition[];
+  private skills: SkillDefinition[] = [];
   private readonly discord: DiscordAdapter;
   private readonly imessage: IMessageAdapter;
   private readonly expressApp = express();
@@ -38,18 +39,6 @@ export class KroosbotApp {
     this.memory = new MemoryManager(config.memory);
     this.jobs = new JobSupervisor(config);
     this.plans = new PlanManager();
-    this.skills = createCoreSkills(config);
-    this.tools = ToolRegistry.createBuiltIn(config, this.memory, {
-      jobs: this.jobs,
-      plans: this.plans,
-      reviewJob: (jobId) => this.reviewJob(jobId)
-    });
-    this.brain =
-      config.brain.mode === "echo"
-        ? new EchoBrain(config.brain.systemPrompt, config.brain.echoPrefix)
-        : config.brain.mode === "agent-sdk"
-          ? new AgentSdkBrain(config.brain, config.app.workspaceDir, this.memory, this.tools, this.skills, (event) => this.recordToolTrace(event))
-          : new OpenAiCompatibleBrain(config.brain, config.app.workspaceDir, this.memory, this.tools, this.skills, (event) => this.recordToolTrace(event));
     this.discord = new DiscordAdapter(config.adapters.discord);
     this.imessage = new IMessageAdapter(config.adapters.imessage);
     this.expressApp.use(express.json({ limit: "2mb" }));
@@ -58,6 +47,7 @@ export class KroosbotApp {
   async start(): Promise<void> {
     await this.memory.initialize();
     await this.jobs.initialize();
+    await this.initializeAssistantRuntime();
 
     this.expressApp.get("/healthz", (_req, res) => {
       res.json({ ok: true });
@@ -81,6 +71,46 @@ export class KroosbotApp {
     }
 
     this.startHeartbeat();
+  }
+
+  private async initializeAssistantRuntime(): Promise<void> {
+    const workspaceSkills = await loadWorkspaceSkills({
+      config: this.config,
+      memory: this.memory,
+      jobs: this.jobs,
+      plans: this.plans,
+      reviewJob: (jobId) => this.reviewJob(jobId)
+    });
+    this.skills = [
+      ...createCoreSkills(this.config),
+      ...workspaceSkills.map((skill) => skill.definition)
+    ];
+    this.tools = ToolRegistry.createBuiltIn(this.config, this.memory, {
+      jobs: this.jobs,
+      plans: this.plans,
+      reviewJob: (jobId) => this.reviewJob(jobId),
+      extraTools: workspaceSkills.flatMap((skill) => skill.tools)
+    });
+    this.brain =
+      this.config.brain.mode === "echo"
+        ? new EchoBrain(this.config.brain.systemPrompt, this.config.brain.echoPrefix)
+        : this.config.brain.mode === "agent-sdk"
+          ? new AgentSdkBrain(
+              this.config.brain,
+              this.config.app.workspaceDir,
+              this.memory,
+              this.tools,
+              this.skills,
+              (event) => this.recordToolTrace(event)
+            )
+          : new OpenAiCompatibleBrain(
+              this.config.brain,
+              this.config.app.workspaceDir,
+              this.memory,
+              this.tools,
+              this.skills,
+              (event) => this.recordToolTrace(event)
+            );
   }
 
   private async handleInbound(message: InboundMessage): Promise<void> {

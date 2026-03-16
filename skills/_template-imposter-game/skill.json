@@ -1,0 +1,6 @@
+{
+  "name": "imposter-game",
+  "description": "Start and manage an imposter game in iMessage group chats.",
+  "enabled": false,
+  "entry": "handler.js"
+}

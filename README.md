@@ -38,6 +38,7 @@ bun run dev
 - `src/config.ts`: config loading and validation
 - `SOUL.md`: workspace-level personality, boundaries, and initiative guidance
 - `HEARTBEAT.md`: workspace-level heartbeat intent
+- `skills/`: workspace skill packages with manifests, prompt files, and optional code handlers
 
 ## Memory
 
@@ -62,6 +63,22 @@ Use it for:
 - continuity rules
 
 This keeps the assistant's "self" editable in the workspace, similar in spirit to OpenClaw.
+
+## Skills
+
+Workspace skills now live under `skills/`.
+
+Each skill package can include:
+
+- `skill.json`
+- `SKILL.md`
+- optional `handler.js`
+
+`SKILL.md` contributes prompt guidance. `handler.js` can register code-backed tools.
+
+This gives the app a path toward agent-authored skills without requiring changes to the core runtime.
+
+See `skills/README.md` for the package format, and `skills/_template-imposter-game/` for a starter template.
 
 ## Tools
 

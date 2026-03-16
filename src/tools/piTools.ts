@@ -16,6 +16,7 @@ export function createPiTools(
     jobs?: JobSupervisor;
     plans?: PlanManager;
     reviewJob?: (jobId: string) => Promise<string>;
+    extraTools?: Tool[];
   }
 ): Tool[] {
   const workspaceDir = path.resolve(config.app.workspaceDir);
@@ -27,6 +28,7 @@ export function createPiTools(
       : []),
     ...(config.jobs.enabled && options?.jobs && options.reviewJob
       ? createJobTools(options.jobs, { reviewJob: options.reviewJob })
-      : [])
+      : []),
+    ...(options?.extraTools ?? [])
   ];
 }
