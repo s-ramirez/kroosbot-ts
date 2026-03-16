@@ -16,7 +16,7 @@ export class AgentSdkBrain implements Brain {
   private readonly systemPrompt: string;
   private readonly historyWindow: number;
   private readonly toolConfig: AppConfig["brain"]["tools"];
-  private readonly mcpServer: McpSdkServerConfigWithInstance | null;
+  private readonly tools?: ToolRegistry;
   // Updated before each query so MCP tool handlers can access the current session
   private currentSessionKey = "";
 
@@ -33,7 +33,7 @@ export class AgentSdkBrain implements Brain {
     this.systemPrompt = config.systemPrompt;
     this.historyWindow = config.historyWindow;
     this.toolConfig = config.tools;
-    this.mcpServer = this.buildMcpServer(tools, config.tools);
+    this.tools = tools;
   }
 
   async reply(message: InboundMessage, history: ChatHistory): Promise<OutboundMessage | null> {
@@ -69,13 +69,17 @@ export class AgentSdkBrain implements Brain {
       memoryResults: memoryResults?.length ?? 0
     });
 
+    // Create a fresh MCP server per query — the SDK binds a transport on connect,
+    // so reusing the same instance across calls causes "Already connected" errors.
+    const mcpServer = this.buildMcpServer(this.tools, this.toolConfig);
+
     const options: Parameters<typeof query>[0]["options"] = {
       systemPrompt: systemPromptText,
-      maxTurns: this.mcpServer ? this.toolConfig.maxSteps * 3 : 1,
+      maxTurns: mcpServer ? this.toolConfig.maxSteps * 3 : 1,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       ...(this.cfg.model ? { model: this.cfg.model } : {}),
-      ...(this.mcpServer ? { mcpServers: { "kroosbot-tools": this.mcpServer } } : {})
+      ...(mcpServer ? { mcpServers: { "kroosbot-tools": mcpServer } } : {})
     };
 
     let result = "";

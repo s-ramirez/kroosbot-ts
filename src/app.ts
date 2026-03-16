@@ -462,6 +462,11 @@ export class KroosbotApp {
   }
 
   private async sendReply(message: InboundMessage, outbound: { text: string }): Promise<void> {
+    console.info("sending reply", {
+      adapter: message.deliveryTarget.adapter,
+      target: message.deliveryTarget.address,
+      length: outbound.text.length
+    });
     if (message.deliveryTarget.adapter === "discord") {
       await this.discord.sendText(message, outbound);
     } else {

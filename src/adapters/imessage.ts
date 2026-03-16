@@ -43,13 +43,22 @@ export class IMessageAdapter {
         await onInbound(message);
         res.json({ ok: true });
       } catch (error) {
+        console.error("imessage webhook handler error", error);
         res.status(500).json({ ok: false, error: String(error) });
       }
     });
   }
 
   async sendText(message: InboundMessage, outbound: OutboundMessage): Promise<void> {
-    const target = parseIMessageDeliveryTarget(message.deliveryTarget);
+    let target = parseIMessageDeliveryTarget(message.deliveryTarget);
+
+    // Webhook payloads often arrive with an empty chats array, so we only have
+    // the handle. Construct the chat GUID directly (iMessage;-;+1234567890) so
+    // we can send via /message/text instead of /chat/new.
+    if (target.kind === "handle") {
+      target = { kind: "chat", value: `iMessage;-;${target.value}` };
+    }
+
     if (this.cfg.sendTyping && target.kind === "chat") {
       await this.setTyping(target.value, true).catch(() => undefined);
     }
@@ -75,6 +84,7 @@ export class IMessageAdapter {
       await this.request("POST", `/api/v1/chat/${encodeURIComponent(target.value)}/read`);
     }
   }
+
 
   private authorize(req: Request): boolean {
     const token =
@@ -104,12 +114,21 @@ export class IMessageAdapter {
     );
     if (!messageId || !senderId) return null;
 
+    if (this.cfg.allowedSenders.length > 0) {
+      const allowed = this.cfg.allowedSenders.some(
+        (s) => normalizeHandle(s) === senderId
+      );
+      if (!allowed) return null;
+    }
+
     const senderName =
       nestedStringAt(message, "handle", "displayName") ??
       nestedStringAt(message, "sender", "displayName") ??
       stringAt(message, ["senderName", "displayName"]);
     const chatGuid =
-      stringAt(message, ["chatGuid", "chat_guid"]) ?? nestedStringAt(message, "chat", "guid");
+      stringAt(message, ["chatGuid", "chat_guid"]) ??
+      nestedStringAt(message, "chat", "guid") ??
+      firstArrayNestedString(message, "chats", "guid");
     const chatIdentifier = stringAt(message, ["chatIdentifier", "chat_identifier"]);
     const isGroup = resolveIsGroup(chatGuid, boolAt(message, ["isGroup", "is_group"]));
     const conversationId = chatGuid ?? chatIdentifier ?? senderId;
@@ -203,6 +222,15 @@ function boolAt(record: Record<string, unknown>, keys: string[]): boolean {
 
 function normalizeHandle(raw: string): string {
   return raw.trim().toLowerCase();
+}
+
+function firstArrayNestedString(record: Record<string, unknown>, arrayKey: string, nestedKey: string): string | null {
+  const arr = record[arrayKey];
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const first = arr[0] as Record<string, unknown> | undefined;
+  if (!first || typeof first !== "object") return null;
+  const value = first[nestedKey];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function resolveIsGroup(chatGuid: string | null, explicit: boolean): boolean {

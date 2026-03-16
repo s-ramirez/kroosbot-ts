@@ -88,7 +88,8 @@ const schema = z.object({
       webhookPath: z.string().default("/imessage/webhook"),
       requestTimeoutMs: z.number().int().positive().default(10000),
       markAsRead: z.boolean().default(false),
-      sendTyping: z.boolean().default(true)
+      sendTyping: z.boolean().default(true),
+      allowedSenders: z.array(z.string()).default([])
     })
   })
 });
