@@ -9,6 +9,9 @@ export function createCoreSkills(config: AppConfig): SkillDefinition[] {
       name: "job_orchestration",
       description: "Delegate long-running coding work to a background pi worker, then monitor and review it.",
       instructions: [
+        "Use get_current_plan and update_current_plan to maintain a structured plan draft while collaborating with the user.",
+        "Before starting a substantial coding job, make sure the plan has a clear title, summary, checklist, and acceptance criteria.",
+        "When the plan is ready, prefer delegate_current_plan so the worker receives the exact structured plan you built with the user.",
         "Use background jobs for substantial coding tasks instead of trying to do the entire implementation in the foreground chat loop.",
         "When delegating, create a concrete handoff with a title, summary, checklist, acceptance criteria, allowed scope, out-of-scope items, and review instructions.",
         "Use delegate_job when the user wants implementation work performed in the background.",

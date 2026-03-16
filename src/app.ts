@@ -11,6 +11,7 @@ import { MemoryManager } from "./memory/manager.js";
 import { ConversationStore, SessionKey, type InboundMessage } from "./store.js";
 import { JobSupervisor } from "./jobs/supervisor.js";
 import type { JobDelegatePayload, JobReviewDecision } from "./jobs/types.js";
+import { PlanManager } from "./plans/manager.js";
 import { createCoreSkills } from "./skills/registry.js";
 import type { SkillDefinition } from "./skills/types.js";
 import { ToolRegistry } from "./tools/registry.js";
@@ -21,27 +22,34 @@ export class KroosbotApp {
   private readonly memory: MemoryManager;
   private readonly tools: ToolRegistry;
   private readonly jobs: JobSupervisor;
+  private readonly plans: PlanManager;
   private readonly skills: SkillDefinition[];
   private readonly discord: DiscordAdapter;
   private readonly imessage: IMessageAdapter;
   private readonly expressApp = express();
   private readonly toolTrace: ToolTraceEvent[] = [];
+  private readonly heartbeatHandledStates = new Set<string>();
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatRunning = false;
+  private activeInboundCount = 0;
 
   constructor(private readonly config: AppConfig) {
     this.store = new ConversationStore(config.app.historyLimit);
     this.memory = new MemoryManager(config.memory);
     this.jobs = new JobSupervisor(config);
+    this.plans = new PlanManager();
     this.skills = createCoreSkills(config);
     this.tools = ToolRegistry.createBuiltIn(config, this.memory, {
       jobs: this.jobs,
+      plans: this.plans,
       reviewJob: (jobId) => this.reviewJob(jobId)
     });
     this.brain =
       config.brain.mode === "echo"
         ? new EchoBrain(config.brain.systemPrompt, config.brain.echoPrefix)
         : config.brain.mode === "agent-sdk"
-          ? new AgentSdkBrain(config.brain, this.memory, this.tools, this.skills, (event) => this.recordToolTrace(event))
-          : new OpenAiCompatibleBrain(config.brain, this.memory, this.tools, this.skills, (event) => this.recordToolTrace(event));
+          ? new AgentSdkBrain(config.brain, config.app.workspaceDir, this.memory, this.tools, this.skills, (event) => this.recordToolTrace(event))
+          : new OpenAiCompatibleBrain(config.brain, config.app.workspaceDir, this.memory, this.tools, this.skills, (event) => this.recordToolTrace(event));
     this.discord = new DiscordAdapter(config.adapters.discord);
     this.imessage = new IMessageAdapter(config.adapters.imessage);
     this.expressApp.use(express.json({ limit: "2mb" }));
@@ -71,44 +79,51 @@ export class KroosbotApp {
       await this.discord.ping();
       await this.discord.start((message) => this.handleInbound(message));
     }
+
+    this.startHeartbeat();
   }
 
   private async handleInbound(message: InboundMessage): Promise<void> {
-    const dedupeKey = ConversationStore.dedupeKey(message);
-    if (this.store.isDuplicate(dedupeKey)) return;
+    this.activeInboundCount += 1;
+    try {
+      const dedupeKey = ConversationStore.dedupeKey(message);
+      if (this.store.isDuplicate(dedupeKey)) return;
 
-    this.store.rememberMessageId(dedupeKey);
-    this.store.appendUserMessage(message);
+      this.store.rememberMessageId(dedupeKey);
+      this.store.appendUserMessage(message);
 
-    const memorySearchReply = await this.tryHandleMemorySearchCommand(message);
-    if (memorySearchReply) {
-      await this.sendReply(message, memorySearchReply);
-      this.store.appendAssistantMessage(message.sessionKey, memorySearchReply.text);
-      return;
+      const memorySearchReply = await this.tryHandleMemorySearchCommand(message);
+      if (memorySearchReply) {
+        await this.sendReply(message, memorySearchReply);
+        this.store.appendAssistantMessage(message.sessionKey, memorySearchReply.text);
+        return;
+      }
+
+      const memoryReply = await this.tryHandleMemoryCommand(message);
+      if (memoryReply) {
+        await this.sendReply(message, memoryReply);
+        this.store.appendAssistantMessage(message.sessionKey, memoryReply.text);
+        return;
+      }
+
+      const toolsReply = await this.tryHandleToolsCommand(message);
+      if (toolsReply) {
+        await this.sendReply(message, toolsReply);
+        this.store.appendAssistantMessage(message.sessionKey, toolsReply.text);
+        return;
+      }
+
+      await this.tryAutoRemember(message);
+
+      const history = this.store.historyFor(message.sessionKey);
+      const outbound = await this.brain.reply(message, history);
+      if (!outbound) return;
+
+      await this.sendReply(message, outbound);
+      this.store.appendAssistantMessage(message.sessionKey, outbound.text);
+    } finally {
+      this.activeInboundCount = Math.max(0, this.activeInboundCount - 1);
     }
-
-    const memoryReply = await this.tryHandleMemoryCommand(message);
-    if (memoryReply) {
-      await this.sendReply(message, memoryReply);
-      this.store.appendAssistantMessage(message.sessionKey, memoryReply.text);
-      return;
-    }
-
-    const toolsReply = await this.tryHandleToolsCommand(message);
-    if (toolsReply) {
-      await this.sendReply(message, toolsReply);
-      this.store.appendAssistantMessage(message.sessionKey, toolsReply.text);
-      return;
-    }
-
-    await this.tryAutoRemember(message);
-
-    const history = this.store.historyFor(message.sessionKey);
-    const outbound = await this.brain.reply(message, history);
-    if (!outbound) return;
-
-    await this.sendReply(message, outbound);
-    this.store.appendAssistantMessage(message.sessionKey, outbound.text);
   }
 
   private async tryHandleMemoryCommand(
@@ -450,28 +465,110 @@ export class KroosbotApp {
     };
     const reply = await reviewBrain.reply(reviewMessage, { turns: [] });
     const parsed = parseReviewDecision(reply?.text ?? "");
+    const title = context.job.title;
+
+    if (parsed.decision === "approve") {
+      await this.jobs.markReviewOutcome(jobId, parsed.decision, parsed.summary, true);
+      return [
+        `I reviewed "${title}" and approved it.`,
+        parsed.summary
+      ].join("\n\n");
+    }
+
     if (parsed.decision === "request_changes") {
       await this.jobs.markReviewOutcome(jobId, parsed.decision, parsed.summary, false);
       const restartedJob = await this.jobs.continueJobWithReview(jobId, parsed.summary);
       return [
-        `Review recommendation for ${jobId}: ${parsed.decision}`,
+        `I reviewed "${title}" and asked for changes.`,
         parsed.summary,
         "",
-        `Automatically restarted job ${restartedJob.id} with revised instructions.`,
-        `Use \`/job status ${restartedJob.id}\` to track the next iteration.`
+        `I already restarted the worker with revised instructions on job ${restartedJob.id}.`
       ].join("\n");
     }
 
     await this.jobs.markReviewOutcome(jobId, parsed.decision, parsed.summary, false);
-    return `Review recommendation for ${jobId}: ${parsed.decision}\n${parsed.summary}`;
+    return [
+      `I reviewed "${title}" and I think we should reject it.`,
+      parsed.summary,
+      "",
+      `I have not reset the branch yet. If you want, I can reject it next.`
+    ].join("\n");
   }
 
   private createReviewBrain(): Brain {
     return this.config.brain.mode === "echo"
       ? new EchoBrain(this.config.brain.systemPrompt, this.config.brain.echoPrefix)
       : this.config.brain.mode === "agent-sdk"
-        ? new AgentSdkBrain(this.config.brain, this.memory, undefined, this.skills)
-        : new OpenAiCompatibleBrain(this.config.brain, this.memory, undefined, this.skills);
+        ? new AgentSdkBrain(this.config.brain, this.config.app.workspaceDir, this.memory, undefined, this.skills)
+        : new OpenAiCompatibleBrain(this.config.brain, this.config.app.workspaceDir, this.memory, undefined, this.skills);
+  }
+
+  private startHeartbeat(): void {
+    if (!this.config.initiative.enabled) return;
+    this.heartbeatTimer = setInterval(() => {
+      void this.runHeartbeat();
+    }, this.config.initiative.heartbeatIntervalMs);
+  }
+
+  private async runHeartbeat(): Promise<void> {
+    if (this.heartbeatRunning || this.activeInboundCount > 0) {
+      return;
+    }
+    this.heartbeatRunning = true;
+    try {
+      const jobs = await this.jobs.listJobs();
+      for (const job of jobs) {
+        const handledKey = `${job.id}:${job.status}:${job.reviewIterationCount ?? 0}`;
+        if (this.heartbeatHandledStates.has(handledKey)) {
+          continue;
+        }
+
+        if (job.status === "ready_for_review" && this.config.initiative.autoReviewReadyJobs) {
+          const reviewText = await this.reviewJob(job.id);
+          await this.notifyJobSession(job.plannerSessionKey, reviewText);
+          this.heartbeatHandledStates.add(handledKey);
+          continue;
+        }
+
+        if (job.status === "blocked" && this.config.initiative.notifyBlockedJobs) {
+          const lines = [`Quick update on "${job.title}": it needs attention.`];
+          if (job.blockerQuestion) {
+            lines.push(job.blockerQuestion);
+          }
+          if (job.resultSummary) {
+            lines.push(job.resultSummary);
+          }
+          await this.notifyJobSession(job.plannerSessionKey, lines.join("\n\n"));
+          this.heartbeatHandledStates.add(handledKey);
+        }
+      }
+    } catch (error) {
+      console.warn("heartbeat run failed", error);
+    } finally {
+      this.heartbeatRunning = false;
+    }
+  }
+
+  private async notifyJobSession(sessionKeyRaw: string, text: string): Promise<void> {
+    if (!sessionKeyRaw.trim()) return;
+    const session = this.store.sessionFor(sessionKeyRaw);
+    if (!session) return;
+
+    const syntheticMessage: InboundMessage = {
+      adapter: session.lastDelivery.adapter,
+      chatKind: session.origin.chatKind,
+      messageId: `heartbeat-${Date.now()}`,
+      sessionKey: session.key,
+      conversationId: session.origin.conversationId,
+      threadId: session.origin.threadId,
+      deliveryTarget: session.lastDelivery,
+      senderId: "heartbeat",
+      senderName: "Kroosbot Heartbeat",
+      text
+    };
+
+    await this.sendReply(syntheticMessage, { text });
+    this.store.appendAssistantMessage(session.key, text);
   }
 }
 

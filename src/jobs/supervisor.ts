@@ -262,6 +262,7 @@ export class JobSupervisor {
       `Review iterations: ${job.reviewIterationCount ?? 0}/${this.maxAutoReviewIterations}`,
       `Last heartbeat: ${job.lastHeartbeatAt ? this.formatTimestamp(job.lastHeartbeatAt) : "never"}`,
       job.resultSummary ? `Summary: ${job.resultSummary}` : null,
+      job.blockerQuestion ? `Blocker question: ${job.blockerQuestion}` : null,
       "",
       `Checks:`,
       checks,

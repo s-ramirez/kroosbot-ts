@@ -35,6 +35,13 @@ const jobsSchema = z.object({
   }).default({})
 });
 
+const initiativeSchema = z.object({
+  enabled: z.boolean().default(true),
+  heartbeatIntervalMs: z.number().int().positive().default(120000),
+  autoReviewReadyJobs: z.boolean().default(true),
+  notifyBlockedJobs: z.boolean().default(true)
+});
+
 const schema = z.object({
   app: z.object({
     listenPort: z.number().int().positive().default(8788),
@@ -64,6 +71,7 @@ const schema = z.object({
       categories: z.array(z.enum(["preference", "decision"])).default(["preference", "decision"])
     }).default({})
   }),
+  initiative: initiativeSchema.default({}),
   jobs: jobsSchema.default({}),
   adapters: z.object({
     discord: z.object({

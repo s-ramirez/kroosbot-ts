@@ -73,6 +73,21 @@ type SessionState = {
   history: ChatHistory;
 };
 
+export type SessionSnapshot = {
+  key: SessionKey;
+  origin: {
+    adapter: AdapterKind;
+    chatKind: ChatKind;
+    conversationLabel?: string;
+    senderId: string;
+    senderName?: string;
+    conversationId: string;
+    threadId?: string;
+  };
+  lastDelivery: DeliveryTarget;
+  history: ChatHistory;
+};
+
 export class IdentityMap {
   private readonly aliasesToPerson = new Map<string, string>();
 
@@ -110,6 +125,20 @@ export class ConversationStore {
 
   historyFor(sessionKey: SessionKey): ChatHistory {
     return this.sessions.get(sessionKey.toString())?.history ?? { turns: [] };
+  }
+
+  sessionFor(sessionKey: SessionKey | string): SessionSnapshot | null {
+    const key = typeof sessionKey === "string" ? sessionKey : sessionKey.toString();
+    const session = this.sessions.get(key);
+    if (!session) return null;
+    return {
+      key: session.key,
+      origin: { ...session.origin },
+      lastDelivery: { ...session.lastDelivery },
+      history: {
+        turns: [...session.history.turns]
+      }
+    };
   }
 
   appendUserMessage(message: InboundMessage): void {

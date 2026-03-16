@@ -33,6 +33,12 @@
       "categories": ["preference", "decision"]
     }
   },
+  "initiative": {
+    "enabled": true,
+    "heartbeatIntervalMs": 120000,
+    "autoReviewReadyJobs": true,
+    "notifyBlockedJobs": true
+  },
   "jobs": {
     "enabled": true,
     "rootDir": "./kroosbot-data/jobs",

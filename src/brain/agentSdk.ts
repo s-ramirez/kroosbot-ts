@@ -5,12 +5,14 @@ import type { AppConfig } from "../config.js";
 import type { MemoryManager } from "../memory/manager.js";
 import type { SkillDefinition } from "../skills/types.js";
 import type { ChatHistory, InboundMessage, OutboundMessage } from "../store.js";
+import { loadWorkspaceContext } from "../workspace/context.js";
 import { buildSystemPrompt, compactHistoryWithoutLatestMessage } from "./prompt.js";
 import type { Brain, ToolTraceEvent } from "./types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 
 export class AgentSdkBrain implements Brain {
   private readonly cfg: AppConfig["brain"]["agentSdk"];
+  private readonly workspaceDir: string;
   private readonly systemPrompt: string;
   private readonly historyWindow: number;
   private readonly toolConfig: AppConfig["brain"]["tools"];
@@ -20,12 +22,14 @@ export class AgentSdkBrain implements Brain {
 
   constructor(
     config: AppConfig["brain"],
+    workspaceDir: string,
     private readonly memoryManager?: MemoryManager,
     tools?: ToolRegistry,
     private readonly skills: SkillDefinition[] = [],
     private readonly onToolTrace?: (event: ToolTraceEvent) => void
   ) {
     this.cfg = config.agentSdk;
+    this.workspaceDir = workspaceDir;
     this.systemPrompt = config.systemPrompt;
     this.historyWindow = config.historyWindow;
     this.toolConfig = config.tools;
@@ -39,12 +43,14 @@ export class AgentSdkBrain implements Brain {
     this.currentSessionKey = message.sessionKey.toString();
 
     const memoryResults = await this.memoryManager?.search(text);
+    const workspaceContext = await loadWorkspaceContext(this.workspaceDir);
     const systemPromptText = buildSystemPrompt(
       this.systemPrompt,
       message,
       memoryResults ?? [],
       [], // tools are handled via MCP, not injected as text
-      this.skills
+      this.skills,
+      workspaceContext
     );
 
     const historyMessages = compactHistoryWithoutLatestMessage(history, message, this.historyWindow);
@@ -65,7 +71,7 @@ export class AgentSdkBrain implements Brain {
 
     const options: Parameters<typeof query>[0]["options"] = {
       systemPrompt: systemPromptText,
-      maxTurns: this.mcpServer ? this.toolConfig.maxSteps + 1 : 1,
+      maxTurns: this.mcpServer ? this.toolConfig.maxSteps * 3 : 1,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       ...(this.cfg.model ? { model: this.cfg.model } : {}),
@@ -74,12 +80,21 @@ export class AgentSdkBrain implements Brain {
 
     let result = "";
     for await (const msg of query({ prompt, options })) {
-      if (msg.type === "result" && msg.subtype === "success") {
-        result = msg.result;
+      if (msg.type === "result") {
         console.info("agent-sdk query completed", {
           session: message.sessionKey.toString(),
-          turns: msg.num_turns
+          subtype: msg.subtype,
+          turns: msg.num_turns,
+          hasResult: "result" in msg ? Boolean((msg as { result: string }).result) : false
         });
+        if (msg.subtype === "success") {
+          result = msg.result;
+        } else {
+          console.warn("agent-sdk query ended with error", {
+            session: message.sessionKey.toString(),
+            msg
+          });
+        }
       }
     }
 

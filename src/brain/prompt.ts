@@ -2,13 +2,15 @@ import type { ChatHistory, InboundMessage } from "../store.js";
 import type { MemorySearchResult } from "../memory/types.js";
 import type { SkillDefinition } from "../skills/types.js";
 import type { ToolDefinition } from "../tools/types.js";
+import type { WorkspaceContext } from "../workspace/context.js";
 
 export function buildSystemPrompt(
   systemPrompt: string,
   message: InboundMessage,
   memoryResults: MemorySearchResult[] = [],
   tools: ToolDefinition[] = [],
-  skills: SkillDefinition[] = []
+  skills: SkillDefinition[] = [],
+  workspaceContext?: WorkspaceContext
 ): string {
   const base =
     systemPrompt.trim() ||
@@ -55,7 +57,10 @@ export function buildSystemPrompt(
           .map((skill) => `- ${skill.name}: ${skill.description}\n${skill.instructions}`)
           .join("\n\n")}`
       : "";
-  return `${base}\n\nOutput rules:\n${outputRules}\n\nMemory policy:\n${memoryPolicy}\n\nRuntime context:\n${buildContextPreamble(message)}${memoryBlock}${skillBlock}${toolBlock}`;
+  const soulBlock = workspaceContext?.soul
+    ? `\n\nSOUL.md:\n${workspaceContext.soul}`
+    : "";
+  return `${base}\n\nOutput rules:\n${outputRules}\n\nMemory policy:\n${memoryPolicy}\n\nRuntime context:\n${buildContextPreamble(message)}${soulBlock}${memoryBlock}${skillBlock}${toolBlock}`;
 }
 
 export function buildContextPreamble(message: InboundMessage): string {

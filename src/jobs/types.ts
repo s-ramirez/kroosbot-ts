@@ -55,6 +55,7 @@ export type JobRecord = {
   checkCommands: string[];
   lastHeartbeatAt?: string;
   resultSummary?: string;
+  blockerQuestion?: string;
   reviewOutcome?: JobReviewOutcome;
   reviewInstructions?: string;
   allowedScope: string[];

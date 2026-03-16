@@ -54,6 +54,7 @@ async function runEvalCase(config: AppConfig, testCase: EvalSuite["cases"][numbe
     const tools = ToolRegistry.createBuiltIn(evalConfig, memory);
     const brain = new OpenAiCompatibleBrain(
       evalConfig.brain,
+      evalConfig.app.workspaceDir,
       memory,
       tools,
       [],

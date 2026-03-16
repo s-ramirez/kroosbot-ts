@@ -36,6 +36,8 @@ bun run dev
 - `src/adapters/`: Discord and iMessage adapters
 - `src/app.ts`: top-level orchestration and dispatch
 - `src/config.ts`: config loading and validation
+- `SOUL.md`: workspace-level personality, boundaries, and initiative guidance
+- `HEARTBEAT.md`: workspace-level heartbeat intent
 
 ## Memory
 
@@ -47,6 +49,19 @@ This version keeps memory deliberately simple:
 - `/remember preference: ...`, `/remember todo: ...`, and similar prefixes create more structured entries
 - `/memory search ...` lets you inspect exactly what memory retrieval sees
 - narrow auto-memory captures only high-confidence preferences and decisions from user messages
+
+## Soul
+
+The main assistant now reads `SOUL.md` from the configured workspace on each turn.
+
+Use it for:
+
+- personality and tone
+- behavioral principles
+- initiative boundaries
+- continuity rules
+
+This keeps the assistant's "self" editable in the workspace, similar in spirit to OpenClaw.
 
 ## Tools
 
@@ -124,6 +139,8 @@ It is meant to be a starter benchmark for comparing local models, not just a smo
 
 This version now includes a first pass at detached background coding jobs backed by `pi`.
 
+The main assistant can now build a structured plan with you during normal conversation and delegate that plan to a background worker, instead of relying only on slash commands.
+
 Primary commands:
 
 - `/delegate help`
@@ -159,3 +176,42 @@ Example:
 ```
 
 Then set `jobs.defaultProvider` to `lmstudio` and `jobs.defaultModel` to the matching model id.
+
+## Planning Flow
+
+The main assistant now has a small planning layer for background coding work.
+
+In normal conversation, it can:
+
+- build a structured plan draft for the current chat session
+- refine that draft as you clarify scope and success criteria
+- delegate the current plan to a background worker when it is ready
+- review the worker's result and continue automatically if changes are needed
+
+The planning tools available to the assistant are:
+
+- `get_current_plan`
+- `update_current_plan`
+- `clear_current_plan`
+- `delegate_current_plan`
+
+The old `/delegate` and `/job ...` commands still exist as a fallback, but the preferred path is now to talk through the plan naturally and let the assistant use these tools itself.
+
+## Initiative
+
+Kroosbot now has a small heartbeat loop intended to make it feel more alive without becoming noisy.
+
+When `initiative.enabled` is on, the app periodically checks background jobs and can:
+
+- automatically review jobs that reach `ready_for_review`
+- send a proactive message back to the original chat when a job is blocked
+- continue the review loop without waiting for a manual `/job review ...`
+
+The first-pass initiative config is:
+
+- `initiative.enabled`
+- `initiative.heartbeatIntervalMs`
+- `initiative.autoReviewReadyJobs`
+- `initiative.notifyBlockedJobs`
+
+This is intentionally narrow. The heartbeat does not invent brand new work on its own yet; it only reacts to ongoing jobs and review state.

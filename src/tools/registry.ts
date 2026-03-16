@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config.js";
 import type { JobSupervisor } from "../jobs/supervisor.js";
 import type { MemoryManager } from "../memory/manager.js";
+import type { PlanManager } from "../plans/manager.js";
 import { createPiTools } from "./piTools.js";
 import type {
   PendingToolApproval,
@@ -26,6 +27,7 @@ export class ToolRegistry {
     memory: MemoryManager,
     options?: {
       jobs?: JobSupervisor;
+      plans?: PlanManager;
       reviewJob?: (jobId: string) => Promise<string>;
     }
   ): ToolRegistry {

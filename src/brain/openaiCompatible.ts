@@ -3,6 +3,7 @@ import type { AppConfig } from "../config.js";
 import type { MemoryManager } from "../memory/manager.js";
 import type { SkillDefinition } from "../skills/types.js";
 import type { ChatHistory, InboundMessage, OutboundMessage } from "../store.js";
+import { loadWorkspaceContext } from "../workspace/context.js";
 import { buildSystemPrompt, compactHistoryWithoutLatestMessage } from "./prompt.js";
 import type { Brain, ToolTraceEvent } from "./types.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -25,18 +26,21 @@ type ChatCompletionResponse = {
 
 export class OpenAiCompatibleBrain implements Brain {
   private readonly cfg: AppConfig["brain"]["openAiCompatible"];
+  private readonly workspaceDir: string;
   private readonly systemPrompt: string;
   private readonly historyWindow: number;
   private readonly toolConfig: AppConfig["brain"]["tools"];
 
   constructor(
     config: AppConfig["brain"],
+    workspaceDir: string,
     private readonly memoryManager?: MemoryManager,
     private readonly tools?: ToolRegistry,
     private readonly skills: SkillDefinition[] = [],
     private readonly onToolTrace?: (event: ToolTraceEvent) => void
   ) {
     this.cfg = config.openAiCompatible;
+    this.workspaceDir = workspaceDir;
     this.systemPrompt = config.systemPrompt;
     this.historyWindow = config.historyWindow;
     this.toolConfig = config.tools;
@@ -138,25 +142,28 @@ export class OpenAiCompatibleBrain implements Brain {
   ): Promise<string | null> {
     const payload: ChatCompletionRequest = {
       model: this.cfg.model,
-      messages: [
-        {
-          role: "system",
-          content: buildSystemPrompt(
-            this.systemPrompt,
-            message,
-            memoryResults ?? [],
-            this.toolsEnabled() ? this.tools?.definitions() ?? [] : [],
-            this.skills
-          )
-        },
-        ...compactHistoryWithoutLatestMessage(history, message, this.historyWindow),
-        { role: "user", content: message.text.trim() },
-        ...toolMessages
-      ],
+      messages: [],
       temperature: this.cfg.temperature,
       max_tokens: this.cfg.maxOutputTokens,
       stream: false
     };
+    const workspaceContext = await loadWorkspaceContext(this.workspaceDir);
+    payload.messages = [
+      {
+        role: "system",
+        content: buildSystemPrompt(
+          this.systemPrompt,
+          message,
+          memoryResults ?? [],
+          this.toolsEnabled() ? this.tools?.definitions() ?? [] : [],
+          this.skills,
+          workspaceContext
+        )
+      },
+      ...compactHistoryWithoutLatestMessage(history, message, this.historyWindow),
+      { role: "user", content: message.text.trim() },
+      ...toolMessages
+    ];
 
     const headers: Record<string, string> = {
       "content-type": "application/json"

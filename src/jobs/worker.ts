@@ -40,6 +40,7 @@ async function main(): Promise<void> {
     if (!current) return;
     current.status = status;
     current.resultSummary = message;
+    current.blockerQuestion = undefined;
     await store.saveJob(current);
     await store.appendEvent(jobId, status === "canceled" ? "job_canceled" : "worker_finished", message);
   };
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
     if (!latest) return;
     latest.status = result.status;
     latest.resultSummary = result.summary;
+    latest.blockerQuestion = result.blockerQuestion;
     latest.checkResults = result.checks;
     latest.lastHeartbeatAt = new Date().toISOString();
     await store.saveJob(latest);

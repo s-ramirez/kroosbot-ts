@@ -14,7 +14,12 @@ export class PiJobRunner {
     private readonly store: JobStore
   ) {}
 
-  async run(job: JobRecord): Promise<{ status: "ready_for_review" | "blocked" | "failed"; summary: string; checks: JobCheckResult[] }> {
+  async run(job: JobRecord): Promise<{
+    status: "ready_for_review" | "blocked" | "failed";
+    summary: string;
+    checks: JobCheckResult[];
+    blockerQuestion?: string;
+  }> {
     const promptPath = `${this.store.jobDir(job.id)}/worker-prompt.md`;
     const prompt = buildWorkerPrompt(job);
     await this.store.appendLog(job.id, `Starting pi runtime for ${job.id}\n`);
@@ -82,13 +87,15 @@ export class PiJobRunner {
       return { status: "failed", summary: summary || `pi exited with code ${exitCode}`, checks: [] };
     }
 
+    const workerResult = parseWorkerResult(stdout);
     const checks = await runChecks(this.store, job, this.config.jobs.defaultTimeoutMs);
     const failing = checks.find((entry) => !entry.ok);
     if (failing) {
       return {
         status: "blocked",
         summary: `Checks failed: ${failing.command}\n${clampText(failing.output, 2000)}`,
-        checks
+        checks,
+        blockerQuestion: workerResult?.blockerQuestion
       };
     }
 
@@ -99,6 +106,7 @@ export class PiJobRunner {
         [
           "pi completed without producing any file changes.",
           "The task may already be satisfied, or the worker stopped early.",
+          workerResult?.summary ? `Worker summary:\n${workerResult.summary}` : null,
           stdout.trim() ? `Worker output:\n${stdout.trim()}` : null,
           statusShort ? `Git status:\n${statusShort}` : null
         ]
@@ -109,12 +117,13 @@ export class PiJobRunner {
       return {
         status: "blocked",
         summary,
-        checks
+        checks,
+        blockerQuestion: workerResult?.blockerQuestion
       };
     }
 
-    const summary = clampText(stdout.trim() || "pi completed successfully.", 3000);
-    return { status: "ready_for_review", summary, checks };
+    const summary = clampText(workerResult?.summary || stdout.trim() || "pi completed successfully.", 3000);
+    return { status: "ready_for_review", summary, checks, blockerQuestion: workerResult?.blockerQuestion };
   }
 
   stop(): void {
@@ -133,6 +142,9 @@ function buildWorkerPrompt(job: JobRecord): string {
     `Follow the plan exactly. Do not redefine scope.`,
     `If you are blocked, explain the blocker clearly in your final message.`,
     `If the repository already satisfies the plan, say that explicitly in your final message instead of pretending work was done.`,
+    `Your very last line must be exactly one JSON object prefixed by RESULT_JSON:.`,
+    `Use this exact shape: RESULT_JSON: {"summary":"short summary","blockerQuestion":"one focused question or empty string"}`,
+    `If you are not blocked, set blockerQuestion to an empty string.`,
     "",
     `Job: ${job.title}`,
     `Workspace: ${job.worktreeDir}`,
@@ -157,6 +169,34 @@ function buildWorkerPrompt(job: JobRecord): string {
     "Review instructions:",
     job.reviewInstructions || "Make the smallest defensible change set and leave the repo in a reviewable state."
   ].join("\n");
+}
+
+function parseWorkerResult(stdout: string): { summary: string; blockerQuestion?: string } | null {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reverse();
+
+  const marker = "RESULT_JSON:";
+  const candidate = lines.find((line) => line.startsWith(marker));
+  if (!candidate) return null;
+
+  const json = candidate.slice(marker.length).trim();
+  try {
+    const parsed = JSON.parse(json) as { summary?: unknown; blockerQuestion?: unknown };
+    const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+    const blockerQuestion = typeof parsed.blockerQuestion === "string"
+      ? parsed.blockerQuestion.trim()
+      : "";
+    if (!summary) return null;
+    return {
+      summary,
+      blockerQuestion: blockerQuestion || undefined
+    };
+  } catch {
+    return null;
+  }
 }
 
 function wireLineLogging(stream: NodeJS.ReadableStream, onLine: (line: string) => Promise<void>): void {
