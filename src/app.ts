@@ -25,6 +25,7 @@ export class KroosbotApp {
   private readonly jobs: JobSupervisor;
   private readonly plans: PlanManager;
   private skills: SkillDefinition[] = [];
+  private workspaceSkillNames: string[] = [];
   private readonly discord: DiscordAdapter;
   private readonly imessage: IMessageAdapter;
   private readonly expressApp = express();
@@ -85,10 +86,13 @@ export class KroosbotApp {
       ...createCoreSkills(this.config),
       ...workspaceSkills.map((skill) => skill.definition)
     ];
+    this.workspaceSkillNames = workspaceSkills.map((skill) => skill.definition.name);
     this.tools = ToolRegistry.createBuiltIn(this.config, this.memory, {
       jobs: this.jobs,
       plans: this.plans,
       reviewJob: (jobId) => this.reviewJob(jobId),
+      getLoadedSkillNames: () => [...this.workspaceSkillNames],
+      reloadRuntime: () => this.reloadAssistantRuntime(),
       extraTools: workspaceSkills.flatMap((skill) => skill.tools)
     });
     this.brain =
@@ -109,8 +113,17 @@ export class KroosbotApp {
               this.memory,
               this.tools,
               this.skills,
-              (event) => this.recordToolTrace(event)
-            );
+            (event) => this.recordToolTrace(event)
+          );
+  }
+
+  private async reloadAssistantRuntime(): Promise<void> {
+    await this.initializeAssistantRuntime();
+    console.info("assistant runtime reloaded", {
+      workspaceSkills: this.workspaceSkillNames.length,
+      toolCount: this.tools.definitions().length,
+      brainMode: this.config.brain.mode
+    });
   }
 
   private async handleInbound(message: InboundMessage): Promise<void> {
@@ -146,7 +159,18 @@ export class KroosbotApp {
       await this.tryAutoRemember(message);
 
       const history = this.store.historyFor(message.sessionKey);
-      const outbound = await this.brain.reply(message, history);
+      let outbound;
+      try {
+        outbound = await this.brain.reply(message, history);
+      } catch (error) {
+        console.error("brain reply failed", {
+          session: message.sessionKey.toString(),
+          error
+        });
+        outbound = {
+          text: "I ran into an internal error while working on that. Please try again in a moment."
+        };
+      }
       if (!outbound) return;
 
       await this.sendReply(message, outbound);

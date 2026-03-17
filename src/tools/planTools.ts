@@ -8,6 +8,8 @@ export function createPlanTools(plans: PlanManager, jobs: JobSupervisor): Tool[]
   return [
     new GetCurrentPlanTool(plans),
     new UpdateCurrentPlanTool(plans),
+    new BlockCurrentPlanOnUserTool(plans),
+    new ResumeCurrentPlanTool(plans),
     new ClearCurrentPlanTool(plans),
     new DelegateCurrentPlanTool(plans, jobs)
   ];
@@ -39,6 +41,9 @@ class UpdateCurrentPlanTool implements Tool {
       { name: "summary", type: "string" as const, description: "Optional plan summary." },
       { name: "checklist", type: "string" as const, description: "Optional newline-separated checklist items." },
       { name: "acceptance_criteria", type: "string" as const, description: "Optional newline-separated acceptance criteria." },
+      { name: "manual_steps", type: "string" as const, description: "Optional newline-separated user steps that must be completed before implementation can continue." },
+      { name: "blocked_on_user", type: "string" as const, description: "Optional true or false override for whether the plan is blocked on user action." },
+      { name: "blocked_reason", type: "string" as const, description: "Optional explanation for why the plan is blocked on the user." },
       { name: "allowed_scope", type: "string" as const, description: "Optional newline-separated allowed scope items." },
       { name: "out_of_scope", type: "string" as const, description: "Optional newline-separated out-of-scope items." },
       { name: "check_commands", type: "string" as const, description: "Optional newline-separated validation commands." },
@@ -59,6 +64,9 @@ class UpdateCurrentPlanTool implements Tool {
       summary: optionalString(args.summary),
       checklist: splitLines(optionalString(args.checklist)),
       acceptanceCriteria: splitLines(optionalString(args.acceptance_criteria)),
+      manualSteps: splitLines(optionalString(args.manual_steps)),
+      blockedOnUser: parseOptionalBooleanString(optionalString(args.blocked_on_user), "blocked_on_user"),
+      blockedReason: optionalString(args.blocked_reason),
       allowedScope: splitLines(optionalString(args.allowed_scope)),
       outOfScope: splitLines(optionalString(args.out_of_scope)),
       checkCommands: splitLines(optionalString(args.check_commands)),
@@ -72,6 +80,58 @@ class UpdateCurrentPlanTool implements Tool {
     return {
       ok: true,
       content: this.plans.render(context.sessionKey)
+    };
+  }
+}
+
+class BlockCurrentPlanOnUserTool implements Tool {
+  readonly definition = {
+    name: "block_current_plan_on_user",
+    description: "Mark the current plan as blocked on the user and record the manual steps still needed.",
+    parameters: [
+      { name: "reason", type: "string" as const, description: "Why the plan is blocked on the user.", required: true },
+      { name: "manual_steps", type: "string" as const, description: "Optional newline-separated manual steps the user must complete." }
+    ]
+  };
+
+  constructor(private readonly plans: PlanManager) {}
+
+  async execute(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const next = this.plans.update(context.sessionKey, {
+      blockedOnUser: true,
+      blockedReason: requiredString(args.reason, "reason"),
+      manualSteps: splitLines(optionalString(args.manual_steps)) ?? [],
+      mergeStrategy: "replace"
+    });
+    return {
+      ok: true,
+      content: renderPlanMessage(context.sessionKey, next)
+    };
+  }
+}
+
+class ResumeCurrentPlanTool implements Tool {
+  readonly definition = {
+    name: "resume_current_plan",
+    description: "Mark the current plan as unblocked after the user completes any required manual setup.",
+    parameters: [
+      { name: "note", type: "string" as const, description: "Optional short note about what changed before resuming." }
+    ]
+  };
+
+  constructor(private readonly plans: PlanManager) {}
+
+  async execute(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const note = optionalString(args.note);
+    const next = this.plans.update(context.sessionKey, {
+      blockedOnUser: false,
+      blockedReason: note ? `Resumed: ${note}` : undefined,
+      manualSteps: [],
+      mergeStrategy: "replace"
+    });
+    return {
+      ok: true,
+      content: renderPlanMessage(context.sessionKey, next)
     };
   }
 }
@@ -117,6 +177,8 @@ class DelegateCurrentPlanTool implements Tool {
     if (!plan.summary?.trim()) missing.push("summary");
     if (plan.acceptanceCriteria.length === 0) missing.push("acceptance criteria");
     if (plan.checklist.length === 0) missing.push("checklist");
+    if (plan.blockedOnUser) missing.push("plan is blocked on user action");
+    if (plan.manualSteps.length > 0) missing.push("manual steps still pending");
     if (missing.length > 0) {
       return {
         ok: false,
@@ -156,4 +218,27 @@ function splitLines(value?: string): string[] | undefined {
 
 function parseMergeStrategy(value?: string): "replace" | "append" {
   return value?.trim().toLowerCase() === "append" ? "append" : "replace";
+}
+
+function parseOptionalBooleanString(value: string | undefined, name: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new Error(`${name} must be either true or false`);
+}
+
+function renderPlanMessage(sessionKey: string, plan: ReturnType<PlanManager["update"]>): string {
+  return [
+    `Updated current plan for ${sessionKey}.`,
+    "",
+    [
+      `Title: ${plan.title ?? "(missing)"}`,
+      `Summary: ${plan.summary ?? "(missing)"}`,
+      `Blocked on user: ${plan.blockedOnUser ? "yes" : "no"}`,
+      `Blocked reason: ${plan.blockedReason ?? "(none)"}`,
+      "Manual steps:",
+      plan.manualSteps.length > 0 ? plan.manualSteps.map((item) => `- ${item}`).join("\n") : "- (none)"
+    ].join("\n")
+  ].join("\n");
 }

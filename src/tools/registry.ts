@@ -29,6 +29,8 @@ export class ToolRegistry {
       jobs?: JobSupervisor;
       plans?: PlanManager;
       reviewJob?: (jobId: string) => Promise<string>;
+      getLoadedSkillNames?: () => string[];
+      reloadRuntime?: () => Promise<void>;
       extraTools?: Tool[];
     }
   ): ToolRegistry {

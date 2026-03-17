@@ -98,6 +98,7 @@ export class AgentSdkBrain implements Brain {
             session: message.sessionKey.toString(),
             msg
           });
+          result = describeAgentSdkFailure(msg.subtype);
         }
       }
     }
@@ -151,5 +152,19 @@ export class AgentSdkBrain implements Brain {
     });
 
     return createSdkMcpServer({ name: "kroosbot-tools", tools: mcpTools });
+  }
+}
+
+function describeAgentSdkFailure(subtype: string): string {
+  switch (subtype) {
+    case "error_max_turns":
+      return "I hit my tool-step limit before I could finish that. Please try again with a shorter request, or ask me to continue from the last step.";
+    case "error_max_budget_usd":
+      return "I stopped because the model budget for that request was exhausted.";
+    case "error_max_structured_output_retries":
+      return "I couldn't finish because the model kept failing to produce a valid structured response.";
+    case "error_during_execution":
+    default:
+      return "I ran into an internal error while working on that request.";
   }
 }

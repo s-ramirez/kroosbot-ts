@@ -3,6 +3,9 @@ export type SessionPlan = {
   summary?: string;
   checklist: string[];
   acceptanceCriteria: string[];
+  manualSteps: string[];
+  blockedOnUser: boolean;
+  blockedReason?: string;
   allowedScope: string[];
   outOfScope: string[];
   checkCommands: string[];
@@ -18,6 +21,9 @@ export type PlanUpdateInput = {
   summary?: string;
   checklist?: string[];
   acceptanceCriteria?: string[];
+  manualSteps?: string[];
+  blockedOnUser?: boolean;
+  blockedReason?: string;
   allowedScope?: string[];
   outOfScope?: string[];
   checkCommands?: string[];
@@ -53,12 +59,17 @@ export class PlanManager {
     if (input.workspaceDir !== undefined) next.workspaceDir = input.workspaceDir;
     if (input.provider !== undefined) next.provider = input.provider;
     if (input.model !== undefined) next.model = input.model;
+    if (input.blockedOnUser !== undefined) next.blockedOnUser = input.blockedOnUser;
+    if (input.blockedReason !== undefined) next.blockedReason = input.blockedReason;
 
     if (input.checklist !== undefined) {
       next.checklist = mergeList(existing.checklist, input.checklist, mergeStrategy);
     }
     if (input.acceptanceCriteria !== undefined) {
       next.acceptanceCriteria = mergeList(existing.acceptanceCriteria, input.acceptanceCriteria, mergeStrategy);
+    }
+    if (input.manualSteps !== undefined) {
+      next.manualSteps = mergeList(existing.manualSteps, input.manualSteps, mergeStrategy);
     }
     if (input.allowedScope !== undefined) {
       next.allowedScope = mergeList(existing.allowedScope, input.allowedScope, mergeStrategy);
@@ -83,6 +94,8 @@ export class PlanManager {
     return [
       `Current plan for ${sessionKey}:`,
       "",
+      `Status: ${describePlanStatus(plan)}`,
+      `Blocked reason: ${plan.blockedReason ?? "(none)"}`,
       `Title: ${plan.title ?? "(missing)"}`,
       `Summary: ${plan.summary ?? "(missing)"}`,
       `Workspace: ${plan.workspaceDir ?? "(default workspace)"}`,
@@ -93,6 +106,9 @@ export class PlanManager {
       "",
       "Acceptance criteria:",
       renderList(plan.acceptanceCriteria),
+      "",
+      "Manual steps:",
+      renderList(plan.manualSteps),
       "",
       "Allowed scope:",
       renderList(plan.allowedScope),
@@ -113,10 +129,22 @@ function createEmptyPlan(): SessionPlan {
   return {
     checklist: [],
     acceptanceCriteria: [],
+    manualSteps: [],
+    blockedOnUser: false,
     allowedScope: [],
     outOfScope: [],
     checkCommands: []
   };
+}
+
+function describePlanStatus(plan: SessionPlan): string {
+  if (plan.blockedOnUser || plan.manualSteps.length > 0) {
+    return "blocked_on_user";
+  }
+  if (!plan.title?.trim() || !plan.summary?.trim() || plan.checklist.length === 0 || plan.acceptanceCriteria.length === 0) {
+    return "draft";
+  }
+  return "ready_to_delegate";
 }
 
 function mergeList(existing: string[], incoming: string[], strategy: "replace" | "append"): string[] {

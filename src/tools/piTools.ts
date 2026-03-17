@@ -8,6 +8,7 @@ import { createCodingTools } from "./codingTools.js";
 import { createJobTools } from "./jobTools.js";
 import { createMemoryTools } from "./memoryTools.js";
 import { createPlanTools } from "./planTools.js";
+import { createSkillTools } from "./skillTools.js";
 
 export function createPiTools(
   config: AppConfig,
@@ -16,6 +17,8 @@ export function createPiTools(
     jobs?: JobSupervisor;
     plans?: PlanManager;
     reviewJob?: (jobId: string) => Promise<string>;
+    getLoadedSkillNames?: () => string[];
+    reloadRuntime?: () => Promise<void>;
     extraTools?: Tool[];
   }
 ): Tool[] {
@@ -23,6 +26,10 @@ export function createPiTools(
   return [
     ...createMemoryTools(memory),
     ...createCodingTools(workspaceDir),
+    ...createSkillTools(workspaceDir, {
+      getLoadedSkillNames: options?.getLoadedSkillNames,
+      reloadRuntime: options?.reloadRuntime
+    }),
     ...(config.jobs.enabled && options?.jobs && options.plans
       ? createPlanTools(options.plans, options.jobs)
       : []),
