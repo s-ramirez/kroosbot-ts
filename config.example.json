@@ -33,6 +33,12 @@
       "categories": ["preference", "decision"]
     }
   },
+  "agents": {
+    "enabled": true,
+    "rootDir": "./kroosbot-data/agents",
+    "defaultAgentId": "",
+    "seed": []
+  },
   "initiative": {
     "enabled": true,
     "heartbeatIntervalMs": 120000,

@@ -1,3 +1,4 @@
+import type { SubagentManager } from "../agents/manager.js";
 import type { AppConfig } from "../config.js";
 import type { JobSupervisor } from "../jobs/supervisor.js";
 import type { MemoryManager } from "../memory/manager.js";
@@ -31,6 +32,7 @@ export class ToolRegistry {
       reviewJob?: (jobId: string) => Promise<string>;
       getLoadedSkillNames?: () => string[];
       reloadRuntime?: () => Promise<void>;
+      agents?: SubagentManager;
       extraTools?: Tool[];
     }
   ): ToolRegistry {

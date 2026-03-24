@@ -35,6 +35,30 @@ const jobsSchema = z.object({
   }).default({})
 });
 
+const subagentConfigSchema = z.object({
+  id: z.string().regex(/^[a-z0-9-]+$/, "agent id must be lowercase alphanumeric with hyphens"),
+  name: z.string().min(1),
+  brainMode: z.enum(["agent-sdk", "openai-compatible"]).default("openai-compatible"),
+  model: z.string().min(1),
+  baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  temperature: z.number().default(0.2),
+  maxOutputTokens: z.number().int().positive().default(300),
+  requestTimeoutMs: z.number().int().positive().default(60000),
+  systemPrompt: z.string().optional(),
+  allowedTools: z.array(z.string()).default([]),
+  skills: z.array(z.string()).default([])
+});
+
+export type SubagentConfig = z.infer<typeof subagentConfigSchema>;
+
+const agentsSchema = z.object({
+  enabled: z.boolean().default(true),
+  rootDir: z.string().default("./kroosbot-data/agents"),
+  defaultAgentId: z.string().default(""),
+  seed: z.array(subagentConfigSchema).default([])
+});
+
 const initiativeSchema = z.object({
   enabled: z.boolean().default(true),
   heartbeatIntervalMs: z.number().int().positive().default(120000),
@@ -71,6 +95,7 @@ const schema = z.object({
       categories: z.array(z.enum(["preference", "decision"])).default(["preference", "decision"])
     }).default({})
   }),
+  agents: agentsSchema.default({}),
   initiative: initiativeSchema.default({}),
   jobs: jobsSchema.default({}),
   adapters: z.object({

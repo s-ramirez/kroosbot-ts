@@ -26,7 +26,8 @@ export class AgentSdkBrain implements Brain {
     private readonly memoryManager?: MemoryManager,
     tools?: ToolRegistry,
     private readonly skills: SkillDefinition[] = [],
-    private readonly onToolTrace?: (event: ToolTraceEvent) => void
+    private readonly onToolTrace?: (event: ToolTraceEvent) => void,
+    private readonly soulOverride?: string
   ) {
     this.cfg = config.agentSdk;
     this.workspaceDir = workspaceDir;
@@ -50,7 +51,8 @@ export class AgentSdkBrain implements Brain {
       memoryResults ?? [],
       [], // tools are handled via MCP, not injected as text
       this.skills,
-      workspaceContext
+      workspaceContext,
+      this.soulOverride
     );
 
     const historyMessages = compactHistoryWithoutLatestMessage(history, message, this.historyWindow);

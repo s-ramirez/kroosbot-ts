@@ -45,5 +45,21 @@ export function createCoreSkills(config: AppConfig): SkillDefinition[] {
     ].join("\n")
   });
 
+  if (config.agents.enabled) {
+    skills.push({
+      name: "agent_orchestration",
+      description: "Create, manage, and switch between named AI agents with different models and personalities.",
+      instructions: [
+        "When the user asks to create a specialized agent, use create_agent with a descriptive name and the requested model.",
+        "The model parameter should be the model identifier (e.g. 'claude-opus-4-6', 'deepseek/deepseek-r1-0528-qwen3-8b').",
+        "If the user describes a personality for the agent, pass it as the personality parameter to give the agent a custom SOUL.",
+        "Use switch_agent to change which agent handles the current conversation. Use 'default' to switch back to the main brain.",
+        "Use list_agents to show available agents when asked.",
+        "Each agent has its own memory namespace, so information stored by one agent is not visible to others.",
+        "When creating an agent, the brain_mode defaults to the main brain's mode. Use 'agent-sdk' for Claude models or 'openai-compatible' for other providers."
+      ].join("\n")
+    });
+  }
+
   return skills;
 }

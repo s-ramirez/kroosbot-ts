@@ -10,7 +10,8 @@ export function buildSystemPrompt(
   memoryResults: MemorySearchResult[] = [],
   tools: ToolDefinition[] = [],
   skills: SkillDefinition[] = [],
-  workspaceContext?: WorkspaceContext
+  workspaceContext?: WorkspaceContext,
+  soulOverride?: string
 ): string {
   const base =
     systemPrompt.trim() ||
@@ -57,8 +58,9 @@ export function buildSystemPrompt(
           .map((skill) => `- ${skill.name}: ${skill.description}\n${skill.instructions}`)
           .join("\n\n")}`
       : "";
-  const soulBlock = workspaceContext?.soul
-    ? `\n\nSOUL.md:\n${workspaceContext.soul}`
+  const effectiveSoul = soulOverride ?? workspaceContext?.soul;
+  const soulBlock = effectiveSoul
+    ? `\n\nSOUL.md:\n${effectiveSoul}`
     : "";
   return `${base}\n\nOutput rules:\n${outputRules}\n\nMemory policy:\n${memoryPolicy}\n\nRuntime context:\n${buildContextPreamble(message)}${soulBlock}${memoryBlock}${skillBlock}${toolBlock}`;
 }

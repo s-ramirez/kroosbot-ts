@@ -15,6 +15,7 @@ import { PlanManager } from "./plans/manager.js";
 import { loadWorkspaceSkills } from "./skills/loader.js";
 import { createCoreSkills } from "./skills/registry.js";
 import type { SkillDefinition } from "./skills/types.js";
+import { SubagentManager } from "./agents/manager.js";
 import { ToolRegistry } from "./tools/registry.js";
 
 export class KroosbotApp {
@@ -22,6 +23,7 @@ export class KroosbotApp {
   private brain!: Brain;
   private readonly memory: MemoryManager;
   private tools!: ToolRegistry;
+  private agents!: SubagentManager;
   private readonly jobs: JobSupervisor;
   private readonly plans: PlanManager;
   private skills: SkillDefinition[] = [];
@@ -49,6 +51,11 @@ export class KroosbotApp {
     await this.memory.initialize();
     await this.jobs.initialize();
     await this.initializeAssistantRuntime();
+
+    // Finalize the SubagentManager with the real brain and tools
+    this.agents.setDefaults(this.brain, this.tools);
+    await this.agents.initialize();
+    await this.agents.loadAll();
 
     this.expressApp.get("/healthz", (_req, res) => {
       res.json({ ok: true });
@@ -87,12 +94,24 @@ export class KroosbotApp {
       ...workspaceSkills.map((skill) => skill.definition)
     ];
     this.workspaceSkillNames = workspaceSkills.map((skill) => skill.definition.name);
+    // Create a placeholder SubagentManager so agent tools can reference it.
+    // It gets fully initialized (brain, loadAll) in start() after the brain is ready.
+    this.agents = new SubagentManager(
+      this.config,
+      // Temporary: default brain will be set after construction below
+      null as unknown as Brain,
+      this.memory,
+      null as unknown as ToolRegistry,
+      this.skills,
+      (event) => this.recordToolTrace(event)
+    );
     this.tools = ToolRegistry.createBuiltIn(this.config, this.memory, {
       jobs: this.jobs,
       plans: this.plans,
       reviewJob: (jobId) => this.reviewJob(jobId),
       getLoadedSkillNames: () => [...this.workspaceSkillNames],
       reloadRuntime: () => this.reloadAssistantRuntime(),
+      agents: this.config.agents.enabled ? this.agents : undefined,
       extraTools: workspaceSkills.flatMap((skill) => skill.tools)
     });
     this.brain =
@@ -156,12 +175,20 @@ export class KroosbotApp {
         return;
       }
 
+      const agentReply = await this.tryHandleAgentCommand(message);
+      if (agentReply) {
+        await this.sendReply(message, agentReply);
+        this.store.appendAssistantMessage(message.sessionKey, agentReply.text);
+        return;
+      }
+
       await this.tryAutoRemember(message);
 
       const history = this.store.historyFor(message.sessionKey);
+      const brain = this.agents.brainFor(message.sessionKey.toString());
       let outbound;
       try {
-        outbound = await this.brain.reply(message, history);
+        outbound = await brain.reply(message, history);
       } catch (error) {
         console.error("brain reply failed", {
           session: message.sessionKey.toString(),
@@ -380,6 +407,115 @@ export class KroosbotApp {
     return {
       text: `Recent tool activity for ${message.sessionKey.toString()}:\n\n${lines.join("\n\n")}`
     };
+  }
+
+  private async tryHandleAgentCommand(
+    message: InboundMessage
+  ): Promise<{ text: string } | null> {
+    try {
+      const text = message.text.trim();
+      const lower = text.toLowerCase();
+
+      // /agents or /agent list — list all agents
+      if (lower === "/agents" || lower === "/agent list") {
+        const agents = await this.agents.listAgents();
+        if (agents.length === 0) {
+          return { text: "No agents configured." };
+        }
+        const activeId = this.agents.activeAgentId(message.sessionKey.toString());
+        const lines = agents.map((agent) => {
+          const active = agent.id === activeId ? " (active)" : "";
+          return `- ${agent.id}: ${agent.name} [${agent.model}]${active}`;
+        });
+        return { text: `Agents:\n${lines.join("\n")}` };
+      }
+
+      // /agent active — show which agent is active for this session
+      if (lower === "/agent active") {
+        const activeId = this.agents.activeAgentId(message.sessionKey.toString());
+        return {
+          text: activeId
+            ? `Active agent for this session: ${activeId}`
+            : "No agent active for this session (using default brain)."
+        };
+      }
+
+      // /agent create <json> — create a new agent
+      if (lower.startsWith("/agent create ")) {
+        const raw = text.slice("/agent create ".length).trim();
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          return { text: "Invalid JSON. Usage: `/agent create {\"name\":\"Researcher\",\"model\":\"claude-opus-4-6\"}`" };
+        }
+        if (!payload.name || !payload.model) {
+          return { text: "Agent payload must include at least `name` and `model`." };
+        }
+        const agent = await this.agents.createAgent(
+          payload as Parameters<SubagentManager["createAgent"]>[0],
+          message.sessionKey.toString()
+        );
+        return { text: `Created agent ${agent.id} (${agent.name}) with model ${agent.model}.` };
+      }
+
+      // /agent switch <id> — switch session to use an agent (or "default")
+      const switchMatch = text.match(/^\/agent\s+switch\s+(\S+)\s*$/i);
+      if (switchMatch) {
+        const id = switchMatch[1] ?? "";
+        if (id.toLowerCase() === "default") {
+          this.agents.switchAgent(message.sessionKey.toString(), null);
+          return { text: "Switched back to the default brain." };
+        }
+        const agent = await this.agents.getAgent(id);
+        if (!agent) {
+          return { text: `Agent "${id}" not found.` };
+        }
+        this.agents.switchAgent(message.sessionKey.toString(), id);
+        return { text: `Switched session to agent ${agent.id} (${agent.name}).` };
+      }
+
+      // /agent info <id> — show agent configuration
+      const infoMatch = text.match(/^\/agent\s+info\s+(\S+)\s*$/i);
+      if (infoMatch) {
+        const id = infoMatch[1] ?? "";
+        const agent = await this.agents.getAgent(id);
+        if (!agent) {
+          return { text: `Agent "${id}" not found.` };
+        }
+        return { text: JSON.stringify(agent, null, 2) };
+      }
+
+      // /agent delete <id> — remove an agent
+      const deleteMatch = text.match(/^\/agent\s+delete\s+(\S+)\s*$/i);
+      if (deleteMatch) {
+        const id = deleteMatch[1] ?? "";
+        const agent = await this.agents.getAgent(id);
+        if (!agent) {
+          return { text: `Agent "${id}" not found.` };
+        }
+        await this.agents.deleteAgent(id);
+        return { text: `Deleted agent ${id}.` };
+      }
+
+      // /agent soul <id> <text> — set SOUL.md content for an agent
+      const soulMatch = text.match(/^\/agent\s+soul\s+(\S+)\s+([\s\S]+)$/i);
+      if (soulMatch) {
+        const id = soulMatch[1] ?? "";
+        const content = soulMatch[2]?.trim() ?? "";
+        if (!content) {
+          return { text: "Provide soul content after the agent id." };
+        }
+        await this.agents.setSoul(id, content);
+        return { text: `Updated SOUL for agent ${id}.` };
+      }
+
+      return null;
+    } catch (error) {
+      return {
+        text: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   private async tryHandleJobCommand(

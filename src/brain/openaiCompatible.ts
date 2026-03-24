@@ -37,7 +37,8 @@ export class OpenAiCompatibleBrain implements Brain {
     private readonly memoryManager?: MemoryManager,
     private readonly tools?: ToolRegistry,
     private readonly skills: SkillDefinition[] = [],
-    private readonly onToolTrace?: (event: ToolTraceEvent) => void
+    private readonly onToolTrace?: (event: ToolTraceEvent) => void,
+    private readonly soulOverride?: string
   ) {
     this.cfg = config.openAiCompatible;
     this.workspaceDir = workspaceDir;
@@ -157,7 +158,8 @@ export class OpenAiCompatibleBrain implements Brain {
           memoryResults ?? [],
           this.toolsEnabled() ? this.tools?.definitions() ?? [] : [],
           this.skills,
-          workspaceContext
+          workspaceContext,
+          this.soulOverride
         )
       },
       ...compactHistoryWithoutLatestMessage(history, message, this.historyWindow),

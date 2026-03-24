@@ -50,41 +50,72 @@ export class IMessageAdapter {
   }
 
   async sendText(message: InboundMessage, outbound: OutboundMessage): Promise<void> {
-    let target = parseIMessageDeliveryTarget(message.deliveryTarget);
-
-    // Webhook payloads often arrive with an empty chats array, so we only have
-    // the handle. Construct the chat GUID directly (iMessage;-;+1234567890) so
-    // we can send via /message/text instead of /chat/new.
-    if (target.kind === "handle") {
-      target = { kind: "chat", value: `iMessage;-;${target.value}` };
+    const target = parseIMessageDeliveryTarget(message.deliveryTarget);
+    if (this.cfg.sendTyping && target.kind === "chat_guid") {
+      await this.setTyping(target.chatGuid, true).catch(() => undefined);
     }
 
-    if (this.cfg.sendTyping && target.kind === "chat") {
-      await this.setTyping(target.value, true).catch(() => undefined);
-    }
-
-    if (target.kind === "chat") {
+    if (target.kind === "chat_guid") {
       await this.postJson("/api/v1/message/text", {
-        chatGuid: target.value,
+        chatGuid: target.chatGuid,
+        tempGuid: crypto.randomUUID(),
+        message: outbound.text
+      });
+    } else if (target.kind === "chat_identifier") {
+      const chatGuid = await this.resolveChatGuid({
+        kind: "chat_identifier",
+        chatIdentifier: target.chatIdentifier
+      });
+      if (!chatGuid) {
+        throw new Error(`Unable to resolve chatGuid for chat identifier: ${target.chatIdentifier}`);
+      }
+      await this.postJson("/api/v1/message/text", {
+        chatGuid,
         tempGuid: crypto.randomUUID(),
         message: outbound.text
       });
     } else {
       await this.postJson("/api/v1/chat/new", {
-        addresses: [target.value],
+        addresses: [target.address],
+        service: target.service === "auto" ? undefined : target.service,
         message: outbound.text,
         tempGuid: `temp-${crypto.randomUUID()}`
       });
     }
 
-    if (this.cfg.sendTyping && target.kind === "chat") {
-      await this.setTyping(target.value, false).catch(() => undefined);
+    if (this.cfg.sendTyping && target.kind === "chat_guid") {
+      await this.setTyping(target.chatGuid, false).catch(() => undefined);
     }
-    if (this.cfg.markAsRead && target.kind === "chat") {
-      await this.request("POST", `/api/v1/chat/${encodeURIComponent(target.value)}/read`);
+    if (this.cfg.markAsRead && target.kind === "chat_guid") {
+      await this.request("POST", `/api/v1/chat/${encodeURIComponent(target.chatGuid)}/read`);
     }
   }
 
+  async sendDirectText(
+    address: string,
+    text: string,
+    options?: { service?: IMessageService }
+  ): Promise<void> {
+    const normalized = normalizeHandle(address);
+    if (!normalized) {
+      throw new Error("direct iMessage target is empty");
+    }
+    await this.postJson("/api/v1/chat/new", {
+      addresses: [normalized],
+      service: options?.service && options.service !== "auto" ? options.service : undefined,
+      message: text,
+      tempGuid: `temp-${crypto.randomUUID()}`
+    });
+  }
+
+  async listChatParticipants(params: {
+    chatGuid?: string;
+    chatIdentifier?: string;
+  }): Promise<string[]> {
+    const chat = await this.findChatRecord(params);
+    if (!chat) return [];
+    return extractParticipantAddresses(chat).map(normalizeHandle).filter(Boolean);
+  }
 
   private authorize(req: Request): boolean {
     const token =
@@ -142,8 +173,10 @@ export class IMessageAdapter {
         : SessionKey.direct("imessage", senderId),
       conversationId,
       deliveryTarget: chatGuid
-        ? { adapter: "imessage", address: `chat:${chatGuid}` }
-        : { adapter: "imessage", address: `handle:${senderId}` },
+        ? { adapter: "imessage", address: `chat_guid:${chatGuid}` }
+        : chatIdentifier
+          ? { adapter: "imessage", address: `chat_identifier:${chatIdentifier}` }
+          : { adapter: "imessage", address: `handle:imessage:${senderId}` },
       senderId,
       senderName: senderName ?? undefined,
       text
@@ -157,6 +190,67 @@ export class IMessageAdapter {
 
   private async postJson(path: string, body: Record<string, unknown>): Promise<void> {
     await this.request("POST", path, body);
+  }
+
+  private async resolveChatGuid(
+    target:
+      | { kind: "chat_guid"; chatGuid: string }
+      | { kind: "chat_identifier"; chatIdentifier: string }
+      | { kind: "handle"; address: string; service: IMessageService }
+  ): Promise<string | null> {
+    if (target.kind === "chat_guid") {
+      return target.chatGuid.trim() || null;
+    }
+    const chat = await this.findChatRecord(
+      target.kind === "chat_identifier"
+        ? { chatIdentifier: target.chatIdentifier }
+        : { handle: target.address }
+    );
+    return extractChatGuid(chat) ?? null;
+  }
+
+  private async findChatRecord(params: {
+    chatGuid?: string;
+    chatIdentifier?: string;
+    handle?: string;
+  }): Promise<Record<string, unknown> | null> {
+    const chats = await this.queryChats();
+    const normalizedHandleTarget = params.handle ? normalizeHandle(params.handle) : null;
+    for (const chat of chats) {
+      const chatGuid = extractChatGuid(chat);
+      const chatIdentifier = extractChatIdentifier(chat, chatGuid);
+      if (params.chatGuid?.trim() && chatGuid === params.chatGuid.trim()) {
+        return chat;
+      }
+      if (params.chatIdentifier?.trim() && chatIdentifier === params.chatIdentifier.trim()) {
+        return chat;
+      }
+      if (normalizedHandleTarget) {
+        const participants = extractParticipantAddresses(chat).map(normalizeHandle);
+        if (participants.length === 1 && participants[0] === normalizedHandleTarget) {
+          return chat;
+        }
+      }
+    }
+    return null;
+  }
+
+  private async queryChats(): Promise<Array<Record<string, unknown>>> {
+    const response = await fetch(this.apiUrl("/api/v1/chat/query"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        limit: 500,
+        offset: 0,
+        with: ["participants"]
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`imessage chat query failed (${response.status}): ${await response.text()}`);
+    }
+    const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    const data = payload && Array.isArray(payload.data) ? payload.data : [];
+    return data.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"));
   }
 
   private async request(method: string, path: string, body?: Record<string, unknown>): Promise<void> {
@@ -178,15 +272,34 @@ export class IMessageAdapter {
   }
 }
 
-function parseIMessageDeliveryTarget(target: DeliveryTarget): { kind: "chat" | "handle"; value: string } {
+type IMessageService = "imessage" | "sms" | "auto";
+
+function parseIMessageDeliveryTarget(target: DeliveryTarget):
+  | { kind: "chat_guid"; chatGuid: string }
+  | { kind: "chat_identifier"; chatIdentifier: string }
+  | { kind: "handle"; address: string; service: IMessageService } {
   if (target.adapter !== "imessage") {
     throw new Error("delivery target adapter mismatch: expected imessage");
   }
-  if (target.address.startsWith("chat:")) {
-    return { kind: "chat", value: target.address.slice("chat:".length) };
+  if (target.address.startsWith("chat_guid:")) {
+    return { kind: "chat_guid", chatGuid: target.address.slice("chat_guid:".length) };
+  }
+  if (target.address.startsWith("chat_identifier:")) {
+    return { kind: "chat_identifier", chatIdentifier: target.address.slice("chat_identifier:".length) };
   }
   if (target.address.startsWith("handle:")) {
-    return { kind: "handle", value: target.address.slice("handle:".length) };
+    const raw = target.address.slice("handle:".length);
+    const parts = raw.split(":");
+    if (parts.length >= 2) {
+      const service = parts[0]?.trim().toLowerCase() as IMessageService;
+      const address = parts.slice(1).join(":").trim();
+      return {
+        kind: "handle",
+        service: service === "sms" || service === "auto" ? service : "imessage",
+        address
+      };
+    }
+    return { kind: "handle", service: "imessage", address: raw.trim() };
   }
   throw new Error(`unsupported imessage delivery target: ${target.address}`);
 }
@@ -237,4 +350,55 @@ function resolveIsGroup(chatGuid: string | null, explicit: boolean): boolean {
   if (chatGuid?.includes(";+;")) return true;
   if (chatGuid?.includes(";-;")) return false;
   return explicit;
+}
+
+function extractChatGuid(chat: Record<string, unknown> | null): string | null {
+  if (!chat) return null;
+  const candidates = [chat.chatGuid, chat.guid, chat.chat_guid];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
+function extractChatIdentifier(chat: Record<string, unknown>, chatGuid?: string | null): string | null {
+  const candidates = [chat.chatIdentifier, chat.chat_identifier, chat.identifier];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  if (!chatGuid) return null;
+  const parts = chatGuid.split(";");
+  const identifier = parts[2]?.trim();
+  return identifier || null;
+}
+
+function extractParticipantAddresses(chat: Record<string, unknown>): string[] {
+  const raw =
+    (Array.isArray(chat.participants) ? chat.participants : null) ??
+    (Array.isArray(chat.handles) ? chat.handles : null) ??
+    (Array.isArray(chat.participantHandles) ? chat.participantHandles : null);
+  if (!raw) return [];
+  const result: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string" && entry.trim()) {
+      result.push(entry.trim());
+      continue;
+    }
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      const record = entry as Record<string, unknown>;
+      const candidate =
+        (typeof record.address === "string" && record.address) ||
+        (typeof record.handle === "string" && record.handle) ||
+        (typeof record.id === "string" && record.id) ||
+        (typeof record.identifier === "string" && record.identifier);
+      if (typeof candidate === "string" && candidate.trim()) {
+        result.push(candidate.trim());
+      }
+    }
+  }
+  return result;
 }
