@@ -643,7 +643,7 @@ export class KroosbotApp {
 
   private async reviewJob(jobId: string): Promise<string> {
     const context = await this.jobs.collectReviewContext(jobId);
-    const reviewBrain = this.createReviewBrain();
+    const reviewBrain = this.brain;
     const reviewMessage: InboundMessage = {
       adapter: "discord",
       chatKind: "direct",
@@ -688,14 +688,6 @@ export class KroosbotApp {
       "",
       `I have not reset the branch yet. If you want, I can reject it next.`
     ].join("\n");
-  }
-
-  private createReviewBrain(): Brain {
-    return this.config.brain.mode === "echo"
-      ? new EchoBrain(this.config.brain.systemPrompt, this.config.brain.echoPrefix)
-      : this.config.brain.mode === "agent-sdk"
-        ? new AgentSdkBrain(this.config.brain, this.config.app.workspaceDir, this.memory, undefined, this.skills)
-        : new OpenAiCompatibleBrain(this.config.brain, this.config.app.workspaceDir, this.memory, undefined, this.skills);
   }
 
   private startHeartbeat(): void {

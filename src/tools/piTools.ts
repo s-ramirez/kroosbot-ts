@@ -37,7 +37,7 @@ export function createPiTools(
       ? createPlanTools(options.plans, options.jobs)
       : []),
     ...(config.jobs.enabled && options?.jobs && options.reviewJob
-      ? createJobTools(options.jobs, { reviewJob: options.reviewJob })
+      ? createJobTools(options.jobs, { reviewJob: options.reviewJob, agents: options.agents })
       : []),
     ...(options?.agents ? createAgentTools(options.agents) : []),
     ...(options?.extraTools ?? [])

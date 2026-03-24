@@ -5,7 +5,6 @@ import type { Brain, ToolTraceEvent } from "../brain/types.js";
 import { MemoryManager } from "../memory/manager.js";
 import type { SkillDefinition } from "../skills/types.js";
 import { ToolRegistry } from "../tools/registry.js";
-import type { Tool } from "../tools/types.js";
 import { AgentStore } from "./store.js";
 import type { SubagentDefinition } from "./types.js";
 
@@ -38,7 +37,7 @@ export class SubagentManager {
   }
 
   brainFor(sessionKey: string): Brain {
-    const agentId = this.sessionAgentMap.get(sessionKey);
+    const agentId = this.resolveAgentId(sessionKey);
     if (!agentId) return this.defaultBrain;
 
     const cached = this.brainCache.get(agentId);
@@ -49,13 +48,18 @@ export class SubagentManager {
   }
 
   memoryFor(sessionKey: string): MemoryManager {
-    const agentId = this.sessionAgentMap.get(sessionKey);
+    const agentId = this.resolveAgentId(sessionKey);
     if (!agentId) return this.defaultMemory;
     return this.memoryCache.get(agentId) ?? this.defaultMemory;
   }
 
   activeAgentId(sessionKey: string): string | undefined {
-    return this.sessionAgentMap.get(sessionKey);
+    return this.resolveAgentId(sessionKey);
+  }
+
+  /** Resolve the agent for a session: explicit binding, then defaultAgentId, then undefined. */
+  private resolveAgentId(sessionKey: string): string | undefined {
+    return this.sessionAgentMap.get(sessionKey) ?? (this.config.agents.defaultAgentId || undefined);
   }
 
   switchAgent(sessionKey: string, agentId: string | null): void {
@@ -64,6 +68,7 @@ export class SubagentManager {
     } else {
       this.sessionAgentMap.set(sessionKey, agentId);
     }
+    void this.store.saveSessionBindings(this.sessionAgentMap);
   }
 
   async createAgent(
@@ -96,7 +101,7 @@ export class SubagentManager {
     const def: SubagentDefinition = {
       id,
       name: params.name,
-      brainMode: params.brainMode ?? this.config.brain.mode === "agent-sdk" ? "agent-sdk" : "openai-compatible",
+      brainMode: params.brainMode ?? (this.config.brain.mode === "agent-sdk" ? "agent-sdk" : "openai-compatible"),
       model: params.model,
       baseUrl: params.baseUrl,
       apiKey: params.apiKey,
@@ -162,17 +167,7 @@ export class SubagentManager {
     await memory.initialize();
     this.memoryCache.set(def.id, memory);
 
-    // Filter tools if allowedTools is specified
-    let tools: ToolRegistry = this.defaultTools;
-    if (def.allowedTools.length > 0) {
-      const allTools = this.defaultTools.definitions();
-      const allowed = new Set(def.allowedTools);
-      const filteredToolDefs = allTools.filter((t) => allowed.has(t.name));
-      // We need to create a filtered registry — use the full registry but filter at brain level
-      // For now, just pass the full registry; tool filtering can be refined later
-      void filteredToolDefs;
-      tools = this.defaultTools;
-    }
+    const tools = this.defaultTools;
 
     // Filter skills if specified
     const skills = def.skills.length > 0
@@ -210,11 +205,74 @@ export class SubagentManager {
     return brain;
   }
 
-  /** Re-hydrate brains for all persisted agents (call after initialize) */
+  /**
+   * Translate the active agent's brain config into pi-compatible job model config.
+   * Returns overrides for provider/model/baseUrl/apiKey, or null if using default brain.
+   */
+  async resolveJobModelConfig(sessionKey: string): Promise<{
+    provider: string;
+    model: string;
+    baseUrl?: string;
+    apiKey?: string;
+  } | null> {
+    const agentId = this.resolveAgentId(sessionKey);
+    if (!agentId) return null;
+
+    const def = await this.store.get(agentId);
+    if (!def) return null;
+
+    // Translate brainMode to pi provider name
+    const provider = resolvepiProvider(def);
+    return {
+      provider,
+      model: def.model,
+      baseUrl: def.baseUrl ?? this.config.brain.openAiCompatible.baseUrl,
+      apiKey: def.apiKey ?? this.config.brain.openAiCompatible.apiKey
+    };
+  }
+
+  /** Re-hydrate brains for all persisted agents and restore session bindings. */
   async loadAll(): Promise<void> {
     const agents = await this.store.list();
     for (const def of agents) {
       await this.ensureBrain(def);
     }
+
+    // Restore persisted session-to-agent bindings
+    const bindings = await this.store.loadSessionBindings();
+    const agentIds = new Set(agents.map((a) => a.id));
+    for (const [sessionKey, agentId] of bindings) {
+      // Only restore bindings for agents that still exist
+      if (agentIds.has(agentId)) {
+        this.sessionAgentMap.set(sessionKey, agentId);
+      }
+    }
   }
+}
+
+/**
+ * Map a SubagentDefinition to a pi-compatible provider name.
+ * The pi CLI recognizes providers like: lmstudio, openai, anthropic, google, etc.
+ * Kroosbot's "openai-compatible" brainMode maps to either "lmstudio" (if baseUrl
+ * points to localhost LMStudio) or "openai" (for generic OpenAI-compatible endpoints).
+ */
+function resolvepiProvider(def: SubagentDefinition): string {
+  if (def.brainMode === "agent-sdk") {
+    return "anthropic";
+  }
+
+  // openai-compatible — infer from baseUrl
+  const baseUrl = (def.baseUrl ?? "").toLowerCase();
+  if (baseUrl.includes("localhost:1234") || baseUrl.includes("127.0.0.1:1234")) {
+    return "lmstudio";
+  }
+  if (baseUrl.includes("openai.com")) {
+    return "openai";
+  }
+  if (baseUrl.includes("anthropic.com")) {
+    return "anthropic";
+  }
+  // Default: openai provider works for most OpenAI-compatible endpoints
+  // when OPENAI_BASE_URL is set via env
+  return "openai";
 }

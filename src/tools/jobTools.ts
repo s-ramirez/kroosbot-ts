@@ -1,3 +1,4 @@
+import type { SubagentManager } from "../agents/manager.js";
 import type { JobSupervisor } from "../jobs/supervisor.js";
 import type { JobDelegatePayload } from "../jobs/types.js";
 import type { Tool, ToolExecutionContext, ToolExecutionResult } from "./types.js";
@@ -7,10 +8,11 @@ export function createJobTools(
   jobs: JobSupervisor,
   options: {
     reviewJob: (jobId: string) => Promise<string>;
+    agents?: SubagentManager;
   }
 ): Tool[] {
   return [
-    new DelegateJobTool(jobs),
+    new DelegateJobTool(jobs, options.agents),
     new ListJobsTool(jobs),
     new GetJobStatusTool(jobs),
     new GetJobLogTool(jobs),
@@ -40,9 +42,22 @@ class DelegateJobTool implements Tool {
     ]
   };
 
-  constructor(private readonly jobs: JobSupervisor) {}
+  constructor(
+    private readonly jobs: JobSupervisor,
+    private readonly agents?: SubagentManager
+  ) {}
 
   async execute(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const explicitProvider = optionalString(args.provider);
+    const explicitModel = optionalString(args.model);
+
+    // If no explicit provider/model, check if the session is bound to an agent
+    // and use its model config translated to pi-compatible values
+    let agentOverrides: { provider: string; model: string; baseUrl?: string; apiKey?: string } | null = null;
+    if (!explicitProvider && !explicitModel && this.agents) {
+      agentOverrides = await this.agents.resolveJobModelConfig(context.sessionKey);
+    }
+
     const payload: JobDelegatePayload = {
       title: requiredString(args.title, "title"),
       summary: requiredString(args.summary, "summary"),
@@ -53,8 +68,10 @@ class DelegateJobTool implements Tool {
       checkCommands: splitLines(optionalString(args.check_commands)),
       reviewInstructions: optionalString(args.review_instructions),
       workspaceDir: optionalString(args.workspace_dir),
-      provider: optionalString(args.provider),
-      model: optionalString(args.model)
+      provider: explicitProvider ?? agentOverrides?.provider,
+      model: explicitModel ?? agentOverrides?.model,
+      baseUrl: agentOverrides?.baseUrl,
+      apiKey: agentOverrides?.apiKey
     };
     const job = await this.jobs.createAndStartJob(payload, context.sessionKey);
     return {
