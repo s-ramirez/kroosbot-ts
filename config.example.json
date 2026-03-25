@@ -57,6 +57,7 @@
     "staleHeartbeatMs": 120000,
     "runtimeCommand": "pi",
     "runtimeArgs": [],
+    "runtimeUsePty": true,
     "checks": {
       "commands": ["bun run build"]
     }

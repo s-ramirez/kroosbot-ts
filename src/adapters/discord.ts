@@ -35,17 +35,34 @@ export class DiscordAdapter {
 			throw new Error("discord token is empty");
 		}
 
-		const response = await fetch("https://discord.com/api/v10/users/@me", {
-			headers: {
-				authorization: `Bot ${this.config.token.trim()}`
+		const maxAttempts = 3;
+		for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+			const response = await fetch("https://discord.com/api/v10/users/@me", {
+				headers: {
+					authorization: `Bot ${this.config.token.trim()}`
+				}
+			});
+			if (response.ok) {
+				const body = (await response.json()) as { id?: string };
+				if (typeof body.id === "string" && body.id.trim()) {
+					this.botUserId = body.id;
+				}
+				return;
 			}
-		});
-		if (!response.ok) {
-			throw new Error(`discord ping failed (${response.status}): ${await response.text()}`);
-		}
-		const body = (await response.json()) as { id?: string };
-		if (typeof body.id === "string" && body.id.trim()) {
-			this.botUserId = body.id;
+
+			const responseText = await response.text();
+			if (response.status === 429 && attempt < maxAttempts) {
+				const retryMs = parseDiscordRetryDelayMs(responseText, response.headers.get("retry-after"));
+				console.warn("discord ping rate limited; retrying", {
+					attempt,
+					maxAttempts,
+					retryMs
+				});
+				await sleep(retryMs);
+				continue;
+			}
+
+			throw new Error(`discord ping failed (${response.status}): ${responseText}`);
 		}
 	}
 
@@ -198,6 +215,28 @@ export class DiscordAdapter {
 			timestampMs: message.createdTimestamp
 		};
 	}
+}
+
+function parseDiscordRetryDelayMs(responseText: string, headerValue: string | null): number {
+	const headerDelayMs = Number.parseFloat(headerValue ?? "");
+	if (Number.isFinite(headerDelayMs) && headerDelayMs > 0) {
+		return Math.ceil(headerDelayMs * 1000);
+	}
+
+	try {
+		const parsed = JSON.parse(responseText) as { retry_after?: unknown };
+		if (typeof parsed.retry_after === "number" && Number.isFinite(parsed.retry_after) && parsed.retry_after > 0) {
+			return Math.ceil(parsed.retry_after * 1000);
+		}
+	} catch {
+		// ignore malformed rate-limit body
+	}
+
+	return 5000;
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseChannelTarget(address: string): Snowflake {

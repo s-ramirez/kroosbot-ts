@@ -5,7 +5,6 @@ import { optionalString, requiredString } from "./shared.js";
 export function createAgentTools(agents: SubagentManager): Tool[] {
   return [
     new CreateAgentTool(agents),
-    new SwitchAgentTool(agents),
     new ListAgentsTool(agents)
   ];
 }
@@ -13,7 +12,7 @@ export function createAgentTools(agents: SubagentManager): Tool[] {
 class CreateAgentTool implements Tool {
   readonly definition = {
     name: "create_agent",
-    description: "Create a new named agent with its own brain, memory, and optional personality.",
+    description: "Create or update a named agent with its own brain, memory, and optional personality. If the agent already exists, only the provided fields are updated.",
     parameters: [
       { name: "name", type: "string" as const, description: "Name for the new agent.", required: true },
       { name: "model", type: "string" as const, description: "Model identifier e.g. claude-opus-4-6.", required: true },
@@ -39,41 +38,16 @@ class CreateAgentTool implements Tool {
     }
 
     try {
-      const agent = await this.agents.createAgent({ name, model, brainMode, personality });
-      return { ok: true, content: `Created agent "${agent.name}" with id "${agent.id}" using model ${agent.model}.` };
+      const agent = await this.agents.createAgent({
+        name,
+        model,
+        brainMode,
+        personality
+      });
+      return { ok: true, content: `Agent "${agent.name}" (${agent.id}) saved with model ${agent.model}.` };
     } catch (err) {
       return { ok: false, content: `Failed to create agent: ${err instanceof Error ? err.message : String(err)}` };
     }
-  }
-}
-
-class SwitchAgentTool implements Tool {
-  readonly definition = {
-    name: "switch_agent",
-    description: "Switch the current session to a different agent, or back to the default.",
-    parameters: [
-      { name: "agent_id", type: "string" as const, description: "Agent id to switch to, or 'default' to switch back.", required: true }
-    ]
-  };
-
-  constructor(private readonly agents: SubagentManager) {}
-
-  async execute(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const agentId = requiredString(args.agent_id, "agent_id");
-    const sessionKey = context.sessionKey;
-
-    if (agentId === "default") {
-      this.agents.switchAgent(sessionKey, null);
-      return { ok: true, content: "Switched back to the default agent." };
-    }
-
-    const agent = await this.agents.getAgent(agentId);
-    if (!agent) {
-      return { ok: false, content: `Agent "${agentId}" not found.` };
-    }
-
-    this.agents.switchAgent(sessionKey, agentId);
-    return { ok: true, content: `Switched session to agent "${agent.name}" (${agent.id}).` };
   }
 }
 

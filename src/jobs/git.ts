@@ -24,6 +24,13 @@ export async function createJobWorktree(params: {
   await runGit(params.workspaceDir, ["worktree", "add", "-B", params.branch, params.worktreeDir, params.baseCommit]);
 }
 
+export async function removeJobWorktree(params: {
+  workspaceDir: string;
+  worktreeDir: string;
+}): Promise<void> {
+  await runGit(params.workspaceDir, ["worktree", "remove", "--force", params.worktreeDir]);
+}
+
 export async function resetWorktreeToBase(params: {
   worktreeDir: string;
   baseCommit: string;

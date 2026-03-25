@@ -1,0 +1,1 @@
+Carl is a focused, no-nonsense coder. Writes clean, efficient code. Skips the fluff and gets straight to implementation. Prefers practical solutions over over-engineered ones.

@@ -33,6 +33,8 @@ export class PiJobRunner {
       job.modelConfig.model,
       "--tools",
       "read,bash,edit,write,grep,find,ls",
+      "--append-system-prompt",
+      buildRuntimeSystemPrompt(),
       "--session-dir",
       `${this.store.jobDir(job.id)}/pi-session`,
       "--print",
@@ -55,24 +57,30 @@ export class PiJobRunner {
       `Using provider=${job.modelConfig.provider} model=${job.modelConfig.model} baseUrl=${job.modelConfig.baseUrl ?? "(default)"} apiKey=${resolvedApiKey ? "[set]" : "[missing]"}\n`
     );
 
-    const child = spawn(job.modelConfig.runtimeCommand, args, {
+    const child = spawnPiProcess({
+      command: job.modelConfig.runtimeCommand,
+      args,
       cwd: job.worktreeDir,
       env,
-      stdio: ["ignore", "pipe", "pipe"]
+      usePty: this.config.jobs.runtimeUsePty
     });
     this.child = child;
 
     let stdout = "";
     let stderr = "";
-    wireLineLogging(child.stdout, async (line) => {
-      stdout += `${line}\n`;
-      await this.store.appendLog(job.id, `[pi stdout] ${line}\n`);
-      await this.store.appendEvent(job.id, "step_note", line.slice(0, 240));
-    });
-    wireLineLogging(child.stderr, async (line) => {
-      stderr += `${line}\n`;
-      await this.store.appendLog(job.id, `[pi stderr] ${line}\n`);
-    });
+    if (child.stdout) {
+      wireLineLogging(child.stdout, async (line) => {
+        stdout += `${line}\n`;
+        await this.store.appendLog(job.id, `[pi stdout] ${line}\n`);
+        await this.store.appendEvent(job.id, "step_note", line.slice(0, 240));
+      });
+    }
+    if (child.stderr) {
+      wireLineLogging(child.stderr, async (line) => {
+        stderr += `${line}\n`;
+        await this.store.appendLog(job.id, `[pi stderr] ${line}\n`);
+      });
+    }
 
     const exitCode = await new Promise<number>((resolve, reject) => {
       child.on("error", reject);
@@ -88,6 +96,7 @@ export class PiJobRunner {
     }
 
     const workerResult = parseWorkerResult(stdout);
+    const sessionDiagnosis = await diagnosePiSession(this.store.jobDir(job.id));
     const checks = await runChecks(this.store, job, this.config.jobs.defaultTimeoutMs);
     const failing = checks.find((entry) => !entry.ok);
     if (failing) {
@@ -107,6 +116,7 @@ export class PiJobRunner {
           "pi completed without producing any file changes.",
           "The task may already be satisfied, or the worker stopped early.",
           workerResult?.summary ? `Worker summary:\n${workerResult.summary}` : null,
+          sessionDiagnosis ? `Session diagnosis:\n${sessionDiagnosis}` : null,
           stdout.trim() ? `Worker output:\n${stdout.trim()}` : null,
           statusShort ? `Git status:\n${statusShort}` : null
         ]
@@ -140,6 +150,13 @@ function buildWorkerPrompt(job: JobRecord): string {
   return [
     `You are executing a background coding job in an isolated git worktree.`,
     `Follow the plan exactly. Do not redefine scope.`,
+    `You are allowed to read, edit, and create files inside this worktree when the plan requires it.`,
+    `Use the runtime's native tools directly. Plain-text tool syntax like <tool_call>, <function=...>, markdown code fences, or narrated shell commands will not execute.`,
+    `If the task requires a code or file change, make the change instead of only describing it.`,
+    `Keep using native tool calls until the filesystem reflects the requested change or you have a real blocker.`,
+    `Before you finish, verify the result in the filesystem and verify that git status or git diff reflects the intended change when one is required.`,
+    `Do not claim success unless the acceptance criteria are satisfied in the worktree right now.`,
+    `If the task requires a change but git diff is empty, treat that as blocked or already satisfied and explain which one is true.`,
     `If you are blocked, explain the blocker clearly in your final message.`,
     `If the repository already satisfies the plan, say that explicitly in your final message instead of pretending work was done.`,
     `Your very last line must be exactly one JSON object prefixed by RESULT_JSON:.`,
@@ -171,6 +188,63 @@ function buildWorkerPrompt(job: JobRecord): string {
   ].join("\n");
 }
 
+function buildRuntimeSystemPrompt(): string {
+  return [
+    "You are running inside the pi coding runtime with native tools.",
+    "When you need to read, search, edit, write, or run shell commands, invoke the native tool directly.",
+    "Do not emit pseudo-tool markup in plain text.",
+    "Never output formats like <tool_call>, <function=...>, XML wrappers, or fenced shell snippets as a substitute for a real tool call.",
+    "If you need bash, call the bash tool directly."
+  ].join(" ");
+}
+
+function spawnPiProcess(params: {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  usePty: boolean;
+}): ChildProcess {
+  if (!params.usePty) {
+    return spawn(params.command, params.args, {
+      cwd: params.cwd,
+      env: params.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  }
+
+  if (process.platform === "darwin") {
+    return spawn("script", ["-q", "/dev/null", params.command, ...params.args], {
+      cwd: params.cwd,
+      env: params.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  }
+
+  if (process.platform === "linux") {
+    return spawn("script", ["-qec", shellEscape([params.command, ...params.args]), "/dev/null"], {
+      cwd: params.cwd,
+      env: params.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  }
+
+  return spawn(params.command, params.args, {
+    cwd: params.cwd,
+    env: params.env,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+}
+
+function shellEscape(parts: string[]): string {
+  return parts
+    .map((part) => {
+      if (/^[A-Za-z0-9_./:=+-]+$/.test(part)) return part;
+      return `'${part.replace(/'/g, `'\"'\"'`)}'`;
+    })
+    .join(" ");
+}
+
 function parseWorkerResult(stdout: string): { summary: string; blockerQuestion?: string } | null {
   const lines = stdout
     .split(/\r?\n/)
@@ -197,6 +271,96 @@ function parseWorkerResult(stdout: string): { summary: string; blockerQuestion?:
   } catch {
     return null;
   }
+}
+
+async function diagnosePiSession(jobDir: string): Promise<string | null> {
+  const sessionDir = `${jobDir}/pi-session`;
+  const latestSession = await findLatestSessionFile(sessionDir);
+  if (!latestSession) return null;
+
+  const raw = await fs.readFile(latestSession, "utf8").catch(() => "");
+  if (!raw.trim()) return null;
+
+  const records = raw
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is Record<string, unknown> => entry !== null);
+
+  const pseudoToolSnippet = findPseudoToolSnippet(records);
+  if (pseudoToolSnippet) {
+    return `The model emitted plain-text pseudo-tool syntax instead of a native tool call: ${pseudoToolSnippet}`;
+  }
+
+  const lastAssistantText = findLastAssistantText(records);
+  return lastAssistantText ? `Last assistant output: ${lastAssistantText}` : null;
+}
+
+async function findLatestSessionFile(sessionDir: string): Promise<string | null> {
+  const entries = await fs.readdir(sessionDir, { withFileTypes: true }).catch(() => []);
+  const candidates = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map((entry) => entry.name)
+    .sort();
+  if (candidates.length === 0) return null;
+  return `${sessionDir}/${candidates[candidates.length - 1]}`;
+}
+
+function findPseudoToolSnippet(records: Record<string, unknown>[]): string | null {
+  for (const record of records) {
+    const message = getMessageRecord(record);
+    if (!message || message.role !== "assistant") continue;
+    for (const snippet of extractContentStrings(message.content)) {
+      if (!/<tool_call>|<function=|<\/function>|<\/tool_call>/.test(snippet)) continue;
+      return clampText(snippet.replace(/\s+/g, " ").trim(), 240);
+    }
+  }
+  return null;
+}
+
+function findLastAssistantText(records: Record<string, unknown>[]): string | null {
+  for (const record of [...records].reverse()) {
+    const message = getMessageRecord(record);
+    if (!message || message.role !== "assistant") continue;
+    const snippets = extractContentStrings(message.content)
+      .map((snippet) => snippet.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    if (snippets.length > 0) {
+      return clampText(snippets.join(" "), 240);
+    }
+  }
+  return null;
+}
+
+function getMessageRecord(
+  record: Record<string, unknown>
+): { role?: string; content?: unknown } | null {
+  const message = record.message;
+  if (!message || typeof message !== "object") return null;
+  return message as { role?: string; content?: unknown };
+}
+
+function extractContentStrings(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const snippets: string[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    const textValue = (item as { text?: unknown }).text;
+    if (typeof textValue === "string" && textValue.trim()) {
+      snippets.push(textValue);
+    }
+    const thinkingValue = (item as { thinking?: unknown }).thinking;
+    if (typeof thinkingValue === "string" && thinkingValue.trim()) {
+      snippets.push(thinkingValue);
+    }
+  }
+  return snippets;
 }
 
 function wireLineLogging(stream: NodeJS.ReadableStream, onLine: (line: string) => Promise<void>): void {

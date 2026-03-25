@@ -79,30 +79,11 @@ export class AgentStore {
     }
   }
 
-  async loadSessionBindings(): Promise<Map<string, string>> {
-    try {
-      const raw = await fs.readFile(this.sessionBindingsPath(), "utf8");
-      const parsed = JSON.parse(raw) as Record<string, string>;
-      return new Map(Object.entries(parsed));
-    } catch {
-      return new Map();
-    }
-  }
-
-  async saveSessionBindings(bindings: Map<string, string>): Promise<void> {
-    const obj = Object.fromEntries(bindings);
-    await fs.writeFile(this.sessionBindingsPath(), JSON.stringify(obj, null, 2), "utf8");
-  }
-
   agentDir(id: string): string {
     return path.join(this.rootDir, id);
   }
 
   private agentJsonPath(id: string): string {
     return path.join(this.rootDir, id, "agent.json");
-  }
-
-  private sessionBindingsPath(): string {
-    return path.join(this.rootDir, "session-bindings.json");
   }
 }

@@ -16,20 +16,23 @@ export function createJobTools(
     new ListJobsTool(jobs),
     new GetJobStatusTool(jobs),
     new GetJobLogTool(jobs),
+    new ClearJobTool(jobs),
+    new ClearJobsTool(jobs),
     new ReviewJobTool(options.reviewJob),
     new ApproveJobTool(jobs),
     new RejectJobTool(jobs),
-    new RetryJobTool(jobs)
+    new RetryJobTool(jobs, options.agents)
   ];
 }
 
 class DelegateJobTool implements Tool {
   readonly definition = {
     name: "delegate_job",
-    description: "Start a long-running background coding job using the pi worker runtime.",
+    description: "Start a long-running background coding job. Use agent_id to delegate to a specific sub-agent (e.g. 'carl').",
     parameters: [
       { name: "title", type: "string" as const, description: "Short job title.", required: true },
       { name: "summary", type: "string" as const, description: "What the worker should accomplish.", required: true },
+      { name: "agent_id", type: "string" as const, description: "Sub-agent id to run the job (uses their model config)." },
       { name: "checklist", type: "string" as const, description: "Optional newline-separated checklist items." },
       { name: "acceptance_criteria", type: "string" as const, description: "Optional newline-separated acceptance criteria." },
       { name: "allowed_scope", type: "string" as const, description: "Optional newline-separated allowed files or scope limits." },
@@ -50,13 +53,12 @@ class DelegateJobTool implements Tool {
   async execute(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const explicitProvider = optionalString(args.provider);
     const explicitModel = optionalString(args.model);
+    const agentId = optionalString(args.agent_id);
 
-    // If no explicit provider/model, check if the session is bound to an agent
-    // and use its model config translated to pi-compatible values
-    let agentOverrides: { provider: string; model: string; baseUrl?: string; apiKey?: string } | null = null;
-    if (!explicitProvider && !explicitModel && this.agents) {
-      agentOverrides = await this.agents.resolveJobModelConfig(context.sessionKey);
-    }
+    // Resolve model config: explicit overrides > named agent > session agent > main brain
+    const brainConfig = this.agents
+      ? await this.agents.resolveJobModelConfig(context.sessionKey, agentId)
+      : undefined;
 
     const payload: JobDelegatePayload = {
       title: requiredString(args.title, "title"),
@@ -68,15 +70,17 @@ class DelegateJobTool implements Tool {
       checkCommands: splitLines(optionalString(args.check_commands)),
       reviewInstructions: optionalString(args.review_instructions),
       workspaceDir: optionalString(args.workspace_dir),
-      provider: explicitProvider ?? agentOverrides?.provider,
-      model: explicitModel ?? agentOverrides?.model,
-      baseUrl: agentOverrides?.baseUrl,
-      apiKey: agentOverrides?.apiKey
+      provider: explicitProvider ?? brainConfig?.provider,
+      model: explicitModel ?? brainConfig?.model,
+      baseUrl: brainConfig?.baseUrl,
+      apiKey: brainConfig?.apiKey,
+      agentId: agentId ?? undefined
     };
     const job = await this.jobs.createAndStartJob(payload, context.sessionKey);
+    const agentLabel = agentId ? ` (agent: ${agentId})` : "";
     return {
       ok: true,
-      content: `Started background job ${job.id} on branch ${job.jobBranch}. Use get_job_status to track progress.`
+      content: `Started background job ${job.id} on branch ${job.jobBranch}${agentLabel}. Use get_job_status to track progress.`
     };
   }
 }
@@ -162,6 +166,51 @@ class ReviewJobTool implements Tool {
   }
 }
 
+class ClearJobTool implements Tool {
+  readonly definition = {
+    name: "clear_job",
+    description: "Delete one blocked or failed background job and remove its isolated worktree.",
+    parameters: [
+      { name: "job_id", type: "string" as const, description: "The job id to clear.", required: true }
+    ]
+  };
+
+  constructor(private readonly jobs: JobSupervisor) {}
+
+  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const jobId = requiredString(args.job_id, "job_id");
+    const job = await this.jobs.clearJob(jobId);
+    return { ok: true, content: `Cleared job ${job.id} (${job.status}).` };
+  }
+}
+
+class ClearJobsTool implements Tool {
+  readonly definition = {
+    name: "clear_jobs",
+    description: "Delete blocked and/or failed background jobs in bulk.",
+    parameters: [
+      { name: "statuses", type: "string" as const, description: "Optional newline-separated statuses. Supported values: blocked, failed." }
+    ]
+  };
+
+  constructor(private readonly jobs: JobSupervisor) {}
+
+  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const rawStatuses = splitLines(optionalString(args.statuses));
+    const statuses = (rawStatuses?.length ? rawStatuses : ["blocked", "failed"])
+      .map((status) => status.toLowerCase())
+      .filter((status): status is "blocked" | "failed" => status === "blocked" || status === "failed");
+    const cleared = await this.jobs.clearJobs(statuses);
+    if (cleared.length === 0) {
+      return { ok: true, content: `No ${statuses.join("/")} jobs to clear.` };
+    }
+    return {
+      ok: true,
+      content: `Cleared ${cleared.length} job(s): ${cleared.map((job) => `${job.id} [${job.status}]`).join(", ")}`
+    };
+  }
+}
+
 class ApproveJobTool implements Tool {
   readonly definition = {
     name: "approve_job",
@@ -201,18 +250,25 @@ class RejectJobTool implements Tool {
 class RetryJobTool implements Tool {
   readonly definition = {
     name: "retry_job",
-    description: "Retry a background job from a clean reset state using the current job runtime config.",
+    description: "Retry a background job from a clean reset state. Uses the session's active agent model config if available.",
     parameters: [
       { name: "job_id", type: "string" as const, description: "The job id to retry.", required: true }
     ]
   };
 
-  constructor(private readonly jobs: JobSupervisor) {}
+  constructor(
+    private readonly jobs: JobSupervisor,
+    private readonly agents?: SubagentManager
+  ) {}
 
-  async execute(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
+  async execute(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const jobId = requiredString(args.job_id, "job_id");
-    const job = await this.jobs.retryJob(jobId);
-    return { ok: true, content: `Retried job ${job.id} on branch ${job.jobBranch}.` };
+    const existingJob = await this.jobs.getJob(jobId);
+    const brainConfig = this.agents
+      ? await this.agents.resolveJobModelConfig(context.sessionKey, existingJob?.agentId)
+      : undefined;
+    const job = await this.jobs.retryJob(jobId, brainConfig);
+    return { ok: true, content: `Retried job ${job.id} on branch ${job.jobBranch} with model ${job.modelConfig.provider}/${job.modelConfig.model}.` };
   }
 }
 

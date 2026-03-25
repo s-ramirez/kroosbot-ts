@@ -2,9 +2,9 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { AppConfig } from "../config.js";
-import { createJobWorktree, getChangedFiles, getDiff, getDiffStat, getStatusShort, resetWorktreeToBase, resolveBaseBranch, resolveBaseCommit } from "./git.js";
+import { createJobWorktree, getChangedFiles, getDiff, getDiffStat, getStatusShort, removeJobWorktree, resetWorktreeToBase, resolveBaseBranch, resolveBaseCommit } from "./git.js";
 import { JobStore } from "./store.js";
-import type { JobDelegatePayload, JobRecord, JobReviewDecision, JobReviewOutcome } from "./types.js";
+import type { JobDelegatePayload, JobRecord, JobReviewDecision, JobReviewOutcome, JobStatus } from "./types.js";
 
 export class JobSupervisor {
   private readonly store: JobStore;
@@ -59,6 +59,7 @@ export class JobSupervisor {
       baseCommit,
       status: "queued",
       plannerSessionKey,
+      agentId: payload.agentId,
       runtime: "pi",
       modelConfig: {
         provider: payload.provider ?? this.config.jobs.defaultProvider,
@@ -126,16 +127,19 @@ export class JobSupervisor {
     return job;
   }
 
-  async retryJob(id: string): Promise<JobRecord> {
+  async retryJob(
+    id: string,
+    agentOverrides?: { provider: string; model: string; baseUrl?: string; apiKey?: string }
+  ): Promise<JobRecord> {
     const job = await this.requireJob(id);
     await resetWorktreeToBase({
       worktreeDir: job.worktreeDir,
       baseCommit: job.baseCommit
     });
-    const refreshedProvider = this.config.jobs.defaultProvider;
-    const refreshedModel = this.config.jobs.defaultModel || this.config.brain.openAiCompatible.model;
-    const refreshedApiKey = this.config.brain.openAiCompatible.apiKey;
-    const refreshedBaseUrl = this.config.brain.openAiCompatible.baseUrl;
+    const refreshedProvider = agentOverrides?.provider ?? job.modelConfig.provider;
+    const refreshedModel = agentOverrides?.model ?? job.modelConfig.model;
+    const refreshedApiKey = agentOverrides?.apiKey ?? job.modelConfig.apiKey;
+    const refreshedBaseUrl = agentOverrides?.baseUrl ?? job.modelConfig.baseUrl;
     job.status = "queued";
     job.resultSummary = undefined;
     job.checkResults = [];
@@ -233,6 +237,25 @@ export class JobSupervisor {
     return this.store.getJob(id);
   }
 
+  async clearJob(id: string): Promise<JobRecord> {
+    const job = await this.requireJob(id);
+    if (!isClearableJobStatus(job.status)) {
+      throw new Error(`Job ${job.id} is ${job.status} and cannot be cleared. Only blocked or failed jobs can be cleared.`);
+    }
+    await this.removeJobArtifacts(job);
+    return job;
+  }
+
+  async clearJobs(statuses: JobStatus[] = ["blocked", "failed"]): Promise<JobRecord[]> {
+    await this.reconcileRunningJobs();
+    const jobs = await this.store.listJobs();
+    const toClear = jobs.filter((job) => statuses.includes(job.status) && isClearableJobStatus(job.status));
+    for (const job of toClear) {
+      await this.removeJobArtifacts(job);
+    }
+    return toClear;
+  }
+
   async getJobStatusReport(id: string): Promise<string> {
     const job = await this.requireJob(id);
     const events = await this.store.readRecentEvents(id, 8);
@@ -298,6 +321,14 @@ export class JobSupervisor {
     const job = await this.store.getJob(id);
     if (!job) throw new Error(`Job not found: ${id}`);
     return job;
+  }
+
+  private async removeJobArtifacts(job: JobRecord): Promise<void> {
+    await removeJobWorktree({
+      workspaceDir: job.workspaceDir,
+      worktreeDir: job.worktreeDir
+    }).catch(() => undefined);
+    await this.store.deleteJob(job.id);
   }
 
   private async enforceConcurrency(): Promise<void> {
@@ -387,4 +418,8 @@ function isPidAlive(pid: number): boolean {
 
 function fileExists(filePath: string): boolean {
   return existsSync(filePath);
+}
+
+function isClearableJobStatus(status: JobStatus): boolean {
+  return status === "blocked" || status === "failed";
 }

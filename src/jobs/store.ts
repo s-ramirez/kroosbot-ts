@@ -63,6 +63,10 @@ export class JobStore {
     await fs.writeFile(this.jobFilePath(record.id), JSON.stringify(record, null, 2), "utf8");
   }
 
+  async deleteJob(id: string): Promise<void> {
+    await fs.rm(this.jobDir(id), { recursive: true, force: true });
+  }
+
   async appendEvent(id: string, type: JobEventType, message?: string, data?: Record<string, unknown>): Promise<void> {
     const event: JobEvent = {
       at: new Date().toISOString(),

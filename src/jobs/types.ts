@@ -47,6 +47,7 @@ export type JobRecord = {
   baseCommit: string;
   status: JobStatus;
   plannerSessionKey: string;
+  agentId?: string;
   runtime: "pi";
   pid?: number;
   modelConfig: JobModelConfig;
@@ -101,4 +102,5 @@ export type JobDelegatePayload = {
   provider?: string;
   apiKey?: string;
   baseUrl?: string;
+  agentId?: string;
 };

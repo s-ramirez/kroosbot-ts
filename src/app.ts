@@ -74,7 +74,11 @@ export class KroosbotApp {
     });
 
     if (this.config.adapters.discord.enabled) {
-      await this.discord.ping();
+      try {
+        await this.discord.ping();
+      } catch (error) {
+        console.warn("discord ping failed during startup; continuing with gateway login", error);
+      }
       await this.discord.start((message) => this.handleInbound(message));
     }
 
@@ -422,22 +426,10 @@ export class KroosbotApp {
         if (agents.length === 0) {
           return { text: "No agents configured." };
         }
-        const activeId = this.agents.activeAgentId(message.sessionKey.toString());
-        const lines = agents.map((agent) => {
-          const active = agent.id === activeId ? " (active)" : "";
-          return `- ${agent.id}: ${agent.name} [${agent.model}]${active}`;
-        });
-        return { text: `Agents:\n${lines.join("\n")}` };
-      }
-
-      // /agent active — show which agent is active for this session
-      if (lower === "/agent active") {
-        const activeId = this.agents.activeAgentId(message.sessionKey.toString());
-        return {
-          text: activeId
-            ? `Active agent for this session: ${activeId}`
-            : "No agent active for this session (using default brain)."
-        };
+        const lines = agents.map((agent) =>
+          `- ${agent.id}: ${agent.name} [${agent.model}, ${agent.brainMode}]`
+        );
+        return { text: `Sub-agents (background workers):\n${lines.join("\n")}` };
       }
 
       // /agent create <json> — create a new agent
@@ -459,21 +451,6 @@ export class KroosbotApp {
         return { text: `Created agent ${agent.id} (${agent.name}) with model ${agent.model}.` };
       }
 
-      // /agent switch <id> — switch session to use an agent (or "default")
-      const switchMatch = text.match(/^\/agent\s+switch\s+(\S+)\s*$/i);
-      if (switchMatch) {
-        const id = switchMatch[1] ?? "";
-        if (id.toLowerCase() === "default") {
-          this.agents.switchAgent(message.sessionKey.toString(), null);
-          return { text: "Switched back to the default brain." };
-        }
-        const agent = await this.agents.getAgent(id);
-        if (!agent) {
-          return { text: `Agent "${id}" not found.` };
-        }
-        this.agents.switchAgent(message.sessionKey.toString(), id);
-        return { text: `Switched session to agent ${agent.id} (${agent.name}).` };
-      }
 
       // /agent info <id> — show agent configuration
       const infoMatch = text.match(/^\/agent\s+info\s+(\S+)\s*$/i);
@@ -531,9 +508,18 @@ export class KroosbotApp {
           return { text: "No background jobs yet." };
         }
         return {
-          text: jobs.slice(0, 10).map((job) =>
-            `- ${job.id} [${job.status}] ${job.title} (${job.jobBranch})`
-          ).join("\n")
+          text: jobs.slice(0, 10).map((job) => {
+            const lines = [
+              `**${job.title}** [${job.status}]`,
+              `  ID: ${job.id}`,
+              `  Branch: ${job.jobBranch}`,
+              `  Model: ${job.modelConfig.provider}/${job.modelConfig.model}`,
+              job.agentId ? `  Agent: ${job.agentId}` : null,
+              job.resultSummary ? `  Summary: ${job.resultSummary.split("\n")[0]}` : null,
+              job.blockerQuestion ? `  Blocker: ${job.blockerQuestion}` : null
+            ];
+            return lines.filter(Boolean).join("\n");
+          }).join("\n\n")
         };
       }
 
@@ -583,6 +569,28 @@ export class KroosbotApp {
         return { text: log || "No worker log yet." };
       }
 
+      const clearMatch = text.match(/^\/job\s+clear\s+(\S+)\s*$/i);
+      if (clearMatch) {
+        const job = await this.jobs.clearJob(clearMatch[1] ?? "");
+        return { text: `Cleared job ${job.id} (${job.status}).` };
+      }
+
+      const clearManyMatch = text.match(/^\/jobs\s+clear(?:\s+(blocked|failed|all|problems))?\s*$/i);
+      if (clearManyMatch) {
+        const target = (clearManyMatch[1] ?? "all").toLowerCase();
+        const statuses: Array<"blocked" | "failed"> = target === "blocked"
+          ? ["blocked"]
+          : target === "failed"
+            ? ["failed"]
+            : ["blocked", "failed"];
+        const cleared = await this.jobs.clearJobs(statuses);
+        return {
+          text: cleared.length > 0
+            ? `Cleared ${cleared.length} job(s): ${cleared.map((job) => `${job.id} [${job.status}]`).join(", ")}`
+            : `No ${statuses.join("/")} jobs to clear.`
+        };
+      }
+
       const cancelMatch = text.match(/^\/job\s+cancel\s+(\S+)\s*$/i);
       if (cancelMatch) {
         const job = await this.jobs.cancelJob(cancelMatch[1] ?? "");
@@ -591,8 +599,14 @@ export class KroosbotApp {
 
       const retryMatch = text.match(/^\/job\s+retry\s+(\S+)\s*$/i);
       if (retryMatch) {
-        const job = await this.jobs.retryJob(retryMatch[1] ?? "");
-        return { text: `Retried job ${job.id} on branch ${job.jobBranch}.` };
+        const existingJob = await this.jobs.getJob(retryMatch[1] ?? "");
+        const agentConfig = this.config.agents.enabled && existingJob?.agentId
+          ? await this.agents.resolveJobModelConfig(existingJob.plannerSessionKey, existingJob.agentId)
+          : undefined;
+        const job = await this.jobs.retryJob(retryMatch[1] ?? "", agentConfig);
+        return {
+          text: `Retried job ${job.id} on branch ${job.jobBranch} with model ${job.modelConfig.provider}/${job.modelConfig.model}.`
+        };
       }
 
       const approveMatch = text.match(/^\/job\s+approve\s+(\S+)\s*$/i);

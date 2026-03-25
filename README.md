@@ -175,6 +175,8 @@ Primary commands:
 
 Jobs are stored under `jobs.rootDir` and run in isolated Git worktrees on `codex/job-<id>` branches.
 
+By default, job workers launch `pi` under a PTY so coding-agent file edits are more reliable.
+
 For local OpenAI-compatible backends like LM Studio, configure `pi` with a custom provider in `~/.pi/agent/models.json` and point jobs at that provider instead of using the built-in `openai` provider.
 
 Example:

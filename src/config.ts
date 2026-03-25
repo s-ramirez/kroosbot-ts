@@ -30,6 +30,7 @@ const jobsSchema = z.object({
   staleHeartbeatMs: z.number().int().positive().default(120000),
   runtimeCommand: z.string().default("pi"),
   runtimeArgs: z.array(z.string()).default([]),
+  runtimeUsePty: z.boolean().default(true),
   checks: z.object({
     commands: z.array(z.string()).default([])
   }).default({})
@@ -55,7 +56,6 @@ export type SubagentConfig = z.infer<typeof subagentConfigSchema>;
 const agentsSchema = z.object({
   enabled: z.boolean().default(true),
   rootDir: z.string().default("./kroosbot-data/agents"),
-  defaultAgentId: z.string().default(""),
   seed: z.array(subagentConfigSchema).default([])
 });
 
@@ -81,7 +81,7 @@ const schema = z.object({
     agentSdk: agentSdkBrainSchema.default({}),
     tools: z.object({
       enabled: z.boolean().default(true),
-      maxSteps: z.number().int().positive().default(3)
+      maxSteps: z.number().int().positive().default(30)
     }).default({})
   }),
   memory: z.object({

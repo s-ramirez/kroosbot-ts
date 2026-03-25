@@ -1,0 +1,13 @@
+{
+  "id": "carl",
+  "name": "carl",
+  "brainMode": "openai-compatible",
+  "model": "qwen/qwen3.5-9b",
+  "baseUrl": "http://127.0.0.1:1234/v1",
+  "temperature": 0.2,
+  "maxOutputTokens": 3000,
+  "requestTimeoutMs": 300000,
+  "allowedTools": [],
+  "skills": [],
+  "createdAt": "2026-03-24T03:16:23.486Z"
+}

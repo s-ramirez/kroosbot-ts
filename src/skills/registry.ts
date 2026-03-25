@@ -53,7 +53,8 @@ export function createCoreSkills(config: AppConfig): SkillDefinition[] {
         "When the user asks to create a specialized agent, use create_agent with a descriptive name and the requested model.",
         "The model parameter should be the model identifier (e.g. 'claude-opus-4-6', 'deepseek/deepseek-r1-0528-qwen3-8b').",
         "If the user describes a personality for the agent, pass it as the personality parameter to give the agent a custom SOUL.",
-        "Use switch_agent to change which agent handles the current conversation. Use 'default' to switch back to the main brain.",
+        "Sub-agents are background workers — they run coding jobs, not foreground conversations. You (the main brain) always handle the conversation.",
+        "When the user says 'ask <agent> to do X' or 'have <agent> do X', delegate the work as a background job using delegate_job with agent_id set to the agent's id.",
         "Use list_agents to show available agents when asked.",
         "Each agent has its own memory namespace, so information stored by one agent is not visible to others.",
         "When creating an agent, the brain_mode defaults to the main brain's mode. Use 'agent-sdk' for Claude models or 'openai-compatible' for other providers."
