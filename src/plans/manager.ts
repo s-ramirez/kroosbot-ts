@@ -1,3 +1,5 @@
+import { RuntimeStore } from "../runtime-store/store.js";
+
 export type SessionPlan = {
   title?: string;
   summary?: string;
@@ -35,54 +37,18 @@ export type PlanUpdateInput = {
 };
 
 export class PlanManager {
-  private readonly plans = new Map<string, SessionPlan>();
+  constructor(private readonly runtime: RuntimeStore) {}
 
   get(sessionKey: string): SessionPlan | null {
-    return this.plans.get(sessionKey) ?? null;
+    return this.runtime.getPlan(sessionKey);
   }
 
   clear(sessionKey: string): void {
-    this.plans.delete(sessionKey);
+    this.runtime.clearPlan(sessionKey);
   }
 
   update(sessionKey: string, input: PlanUpdateInput): SessionPlan {
-    const existing = this.get(sessionKey) ?? createEmptyPlan();
-    const mergeStrategy = input.mergeStrategy ?? "replace";
-    const next: SessionPlan = {
-      ...existing,
-      updatedAt: new Date().toISOString()
-    };
-
-    if (input.title !== undefined) next.title = input.title;
-    if (input.summary !== undefined) next.summary = input.summary;
-    if (input.reviewInstructions !== undefined) next.reviewInstructions = input.reviewInstructions;
-    if (input.workspaceDir !== undefined) next.workspaceDir = input.workspaceDir;
-    if (input.provider !== undefined) next.provider = input.provider;
-    if (input.model !== undefined) next.model = input.model;
-    if (input.blockedOnUser !== undefined) next.blockedOnUser = input.blockedOnUser;
-    if (input.blockedReason !== undefined) next.blockedReason = input.blockedReason;
-
-    if (input.checklist !== undefined) {
-      next.checklist = mergeList(existing.checklist, input.checklist, mergeStrategy);
-    }
-    if (input.acceptanceCriteria !== undefined) {
-      next.acceptanceCriteria = mergeList(existing.acceptanceCriteria, input.acceptanceCriteria, mergeStrategy);
-    }
-    if (input.manualSteps !== undefined) {
-      next.manualSteps = mergeList(existing.manualSteps, input.manualSteps, mergeStrategy);
-    }
-    if (input.allowedScope !== undefined) {
-      next.allowedScope = mergeList(existing.allowedScope, input.allowedScope, mergeStrategy);
-    }
-    if (input.outOfScope !== undefined) {
-      next.outOfScope = mergeList(existing.outOfScope, input.outOfScope, mergeStrategy);
-    }
-    if (input.checkCommands !== undefined) {
-      next.checkCommands = mergeList(existing.checkCommands, input.checkCommands, mergeStrategy);
-    }
-
-    this.plans.set(sessionKey, next);
-    return next;
+    return this.runtime.updatePlan(sessionKey, input);
   }
 
   render(sessionKey: string): string {
@@ -125,18 +91,6 @@ export class PlanManager {
   }
 }
 
-function createEmptyPlan(): SessionPlan {
-  return {
-    checklist: [],
-    acceptanceCriteria: [],
-    manualSteps: [],
-    blockedOnUser: false,
-    allowedScope: [],
-    outOfScope: [],
-    checkCommands: []
-  };
-}
-
 function describePlanStatus(plan: SessionPlan): string {
   if (plan.blockedOnUser || plan.manualSteps.length > 0) {
     return "blocked_on_user";
@@ -145,25 +99,6 @@ function describePlanStatus(plan: SessionPlan): string {
     return "draft";
   }
   return "ready_to_delegate";
-}
-
-function mergeList(existing: string[], incoming: string[], strategy: "replace" | "append"): string[] {
-  if (strategy === "replace") {
-    return dedupe(incoming);
-  }
-  return dedupe([...existing, ...incoming]);
-}
-
-function dedupe(values: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    const normalized = value.trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-  }
-  return result;
 }
 
 function renderList(values: string[]): string {

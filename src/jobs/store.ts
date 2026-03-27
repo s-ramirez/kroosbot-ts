@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { RuntimeStore } from "../runtime-store/store.js";
 import type { JobEvent, JobEventType, JobRecord, JobReviewOutcome } from "./types.js";
 
 export class JobStore {
   private readonly rootDir: string;
 
-  constructor(rootDir: string) {
+  constructor(rootDir: string, private readonly runtime?: RuntimeStore) {
     this.rootDir = path.resolve(rootDir);
   }
 
@@ -36,6 +37,7 @@ export class JobStore {
     await fs.writeFile(this.planFilePath(record.id), record.planDocument, "utf8");
     await fs.writeFile(this.eventsFilePath(record.id), "", "utf8");
     await fs.writeFile(this.workerLogPath(record.id), "", "utf8");
+    this.runtime?.upsertJobRecord(record);
   }
 
   async getJob(id: string): Promise<JobRecord | null> {
@@ -61,10 +63,12 @@ export class JobStore {
   async saveJob(record: JobRecord): Promise<void> {
     record.updatedAt = new Date().toISOString();
     await fs.writeFile(this.jobFilePath(record.id), JSON.stringify(record, null, 2), "utf8");
+    this.runtime?.upsertJobRecord(record);
   }
 
   async deleteJob(id: string): Promise<void> {
     await fs.rm(this.jobDir(id), { recursive: true, force: true });
+    this.runtime?.removeJobRecord(id);
   }
 
   async appendEvent(id: string, type: JobEventType, message?: string, data?: Record<string, unknown>): Promise<void> {

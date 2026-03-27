@@ -61,9 +61,21 @@ const agentsSchema = z.object({
 
 const initiativeSchema = z.object({
   enabled: z.boolean().default(true),
+  cron: z.string().optional(),
   heartbeatIntervalMs: z.number().int().positive().default(120000),
   autoReviewReadyJobs: z.boolean().default(true),
   notifyBlockedJobs: z.boolean().default(true)
+});
+
+const conversationsSchema = z.object({
+  enabled: z.boolean().default(true),
+  rootDir: z.string().default("./kroosbot-data/conversations"),
+  historyLimit: z.number().int().positive().default(10)
+});
+
+const runtimeStoreSchema = z.object({
+  enabled: z.boolean().default(true),
+  dbPath: z.string().default("./kroosbot-data/runtime.sqlite")
 });
 
 const schema = z.object({
@@ -97,6 +109,8 @@ const schema = z.object({
   }),
   agents: agentsSchema.default({}),
   initiative: initiativeSchema.default({}),
+  conversations: conversationsSchema.default({}),
+  runtimeStore: runtimeStoreSchema.default({}),
   jobs: jobsSchema.default({}),
   adapters: z.object({
     discord: z.object({

@@ -41,9 +41,19 @@
   },
   "initiative": {
     "enabled": true,
+    "cron": "*/2 * * * *",
     "heartbeatIntervalMs": 120000,
     "autoReviewReadyJobs": true,
     "notifyBlockedJobs": true
+  },
+  "conversations": {
+    "enabled": true,
+    "rootDir": "./kroosbot-data/conversations",
+    "historyLimit": 10
+  },
+  "runtimeStore": {
+    "enabled": true,
+    "dbPath": "./kroosbot-data/runtime.sqlite"
   },
   "jobs": {
     "enabled": true,

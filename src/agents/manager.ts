@@ -6,6 +6,7 @@ import { AgentSdkBrain } from "../brain/agentSdk.js";
 import { OpenAiCompatibleBrain } from "../brain/openaiCompatible.js";
 import type { Brain, ToolTraceEvent } from "../brain/types.js";
 import { MemoryManager } from "../memory/manager.js";
+import type { RuntimeStore } from "../runtime-store/store.js";
 import type { SkillDefinition } from "../skills/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { AgentStore } from "./store.js";
@@ -18,13 +19,14 @@ export class SubagentManager {
 
   constructor(
     private readonly config: AppConfig,
+    runtime: RuntimeStore,
     private defaultBrain: Brain,
     private readonly defaultMemory: MemoryManager,
     private defaultTools: ToolRegistry,
     private readonly defaultSkills: SkillDefinition[],
     private readonly onToolTrace?: (event: ToolTraceEvent) => void
   ) {
-    this.store = new AgentStore(config.agents.rootDir);
+    this.store = new AgentStore(config.agents.rootDir, runtime);
   }
 
   /** Set the real default brain and tools after they are constructed (resolves init ordering). */

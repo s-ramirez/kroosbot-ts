@@ -5,6 +5,7 @@ import { loadConfig, type AppConfig } from "../config.js";
 import { OpenAiCompatibleBrain } from "../brain/openaiCompatible.js";
 import type { ToolTraceEvent } from "../brain/types.js";
 import { MemoryManager } from "../memory/manager.js";
+import { RuntimeStore } from "../runtime-store/store.js";
 import { SessionKey, type ChatHistory, type InboundMessage } from "../store.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { evalSuiteSchema, type EvalCaseResult, type EvalSuite } from "./types.js";
@@ -42,8 +43,11 @@ async function runEvalCase(config: AppConfig, testCase: EvalSuite["cases"][numbe
     const evalConfig = buildEvalConfig(config, {
       workspaceDir,
       memoryDir,
-      memoryIndexFile
+      memoryIndexFile,
+      runtimeDbPath: path.join(tempRoot, "runtime.sqlite")
     });
+    const runtime = new RuntimeStore(evalConfig.runtimeStore, evalConfig.app.historyLimit);
+    runtime.initialize();
     const memory = new MemoryManager(evalConfig.memory);
     await memory.initialize();
     for (const note of testCase.memoryNotes) {
@@ -51,7 +55,7 @@ async function runEvalCase(config: AppConfig, testCase: EvalSuite["cases"][numbe
     }
 
     const toolTrace: ToolTraceEvent[] = [];
-    const tools = ToolRegistry.createBuiltIn(evalConfig, memory);
+    const tools = ToolRegistry.createBuiltIn(evalConfig, memory, { runtime });
     const brain = new OpenAiCompatibleBrain(
       evalConfig.brain,
       evalConfig.app.workspaceDir,
@@ -106,7 +110,7 @@ async function runEvalCase(config: AppConfig, testCase: EvalSuite["cases"][numbe
 
 function buildEvalConfig(
   base: AppConfig,
-  paths: { workspaceDir: string; memoryDir: string; memoryIndexFile: string }
+  paths: { workspaceDir: string; memoryDir: string; memoryIndexFile: string; runtimeDbPath: string }
 ): AppConfig {
   return {
     ...base,
@@ -118,6 +122,10 @@ function buildEvalConfig(
       ...base.memory,
       rootDir: paths.memoryDir,
       indexFile: paths.memoryIndexFile
+    },
+    runtimeStore: {
+      ...base.runtimeStore,
+      dbPath: paths.runtimeDbPath
     }
   };
 }

@@ -14,18 +14,25 @@ import type { JobDelegatePayload, JobReviewDecision } from "./jobs/types.js";
 import { PlanManager } from "./plans/manager.js";
 import { loadWorkspaceSkills } from "./skills/loader.js";
 import { createCoreSkills } from "./skills/registry.js";
+import { ScheduledTaskManager } from "./scheduler/manager.js";
+import type { ScheduledTaskInput, ScheduledTaskRecord } from "./scheduler/types.js";
 import type { SkillDefinition } from "./skills/types.js";
+import { RuntimeStore } from "./runtime-store/store.js";
 import { SubagentManager } from "./agents/manager.js";
 import { ToolRegistry } from "./tools/registry.js";
+import { ConversationLogger } from "./conversations/logger.js";
 
 export class KroosbotApp {
   private readonly store: ConversationStore;
+  private readonly conversations: ConversationLogger;
+  private readonly runtime: RuntimeStore;
   private brain!: Brain;
   private readonly memory: MemoryManager;
   private tools!: ToolRegistry;
   private agents!: SubagentManager;
   private readonly jobs: JobSupervisor;
   private readonly plans: PlanManager;
+  private readonly tasks: ScheduledTaskManager;
   private skills: SkillDefinition[] = [];
   private workspaceSkillNames: string[] = [];
   private readonly discord: DiscordAdapter;
@@ -33,22 +40,27 @@ export class KroosbotApp {
   private readonly expressApp = express();
   private readonly toolTrace: ToolTraceEvent[] = [];
   private readonly heartbeatHandledStates = new Set<string>();
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private heartbeatRunning = false;
+  private schedulerTimer: ReturnType<typeof setInterval> | null = null;
+  private schedulerRunning = false;
   private activeInboundCount = 0;
 
   constructor(private readonly config: AppConfig) {
-    this.store = new ConversationStore(config.app.historyLimit);
+    this.runtime = new RuntimeStore(config.runtimeStore, config.app.historyLimit);
+    this.store = new ConversationStore(this.runtime, config.app.historyLimit);
+    this.conversations = new ConversationLogger(config.conversations);
     this.memory = new MemoryManager(config.memory);
-    this.jobs = new JobSupervisor(config);
-    this.plans = new PlanManager();
+    this.jobs = new JobSupervisor(config, this.runtime);
+    this.plans = new PlanManager(this.runtime);
+    this.tasks = new ScheduledTaskManager(this.runtime);
     this.discord = new DiscordAdapter(config.adapters.discord);
     this.imessage = new IMessageAdapter(config.adapters.imessage);
     this.expressApp.use(express.json({ limit: "2mb" }));
   }
 
   async start(): Promise<void> {
+    this.runtime.initialize();
     await this.memory.initialize();
+    await this.conversations.initialize();
     await this.jobs.initialize();
     await this.initializeAssistantRuntime();
 
@@ -59,6 +71,74 @@ export class KroosbotApp {
 
     this.expressApp.get("/healthz", (_req, res) => {
       res.json({ ok: true });
+    });
+    this.expressApp.get("/sessions", (req, res) => {
+      const requestedLimit = Number.parseInt(String(req.query.limit ?? "20"), 10);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.min(Math.max(requestedLimit, 1), 100)
+        : 20;
+      res.json({
+        ok: true,
+        sessions: this.runtime.listSessions(limit).map((session) => ({
+          sessionKey: session.key.toString(),
+          origin: session.origin,
+          lastDelivery: session.lastDelivery,
+          status: session.status,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          lastMessageAt: session.lastMessageAt ?? null
+        }))
+      });
+    });
+    this.expressApp.get("/sessions/:sessionKey", (req, res) => {
+      const session = this.runtime.sessionFor(String(req.params.sessionKey ?? ""));
+      if (!session) {
+        res.status(404).json({ ok: false, error: "session not found" });
+        return;
+      }
+      res.json({
+        ok: true,
+        session: {
+          sessionKey: session.key.toString(),
+          origin: session.origin,
+          lastDelivery: session.lastDelivery,
+          history: session.history
+        }
+      });
+    });
+    this.expressApp.get("/sessions/:sessionKey/history", (req, res) => {
+      const sessionKey = String(req.params.sessionKey ?? "");
+      const requestedLimit = Number.parseInt(String(req.query.limit ?? "20"), 10);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.min(Math.max(requestedLimit, 1), 100)
+        : 20;
+      const session = this.runtime.sessionFor(sessionKey);
+      if (!session) {
+        res.status(404).json({ ok: false, error: "session not found" });
+        return;
+      }
+      res.json({
+        ok: true,
+        sessionKey,
+        history: this.runtime.historyForSessionKey(sessionKey, limit)
+      });
+    });
+    this.expressApp.post("/sessions/:sessionKey/messages", async (req, res) => {
+      const sessionKey = String(req.params.sessionKey ?? "");
+      const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+      if (!text) {
+        res.status(400).json({ ok: false, error: "text is required" });
+        return;
+      }
+      try {
+        await this.sendSessionMessage(sessionKey, text);
+        res.json({ ok: true });
+      } catch (error) {
+        res.status(400).json({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
     });
 
     if (this.config.adapters.imessage.enabled) {
@@ -82,7 +162,8 @@ export class KroosbotApp {
       await this.discord.start((message) => this.handleInbound(message));
     }
 
-    this.startHeartbeat();
+    this.installInternalTasks();
+    this.startScheduler();
   }
 
   private async initializeAssistantRuntime(): Promise<void> {
@@ -102,6 +183,7 @@ export class KroosbotApp {
     // It gets fully initialized (brain, loadAll) in start() after the brain is ready.
     this.agents = new SubagentManager(
       this.config,
+      this.runtime,
       // Temporary: default brain will be set after construction below
       null as unknown as Brain,
       this.memory,
@@ -112,6 +194,8 @@ export class KroosbotApp {
     this.tools = ToolRegistry.createBuiltIn(this.config, this.memory, {
       jobs: this.jobs,
       plans: this.plans,
+      runtime: this.runtime,
+      sendSessionMessage: (params) => this.sendSessionMessage(params.sessionKey, params.text),
       reviewJob: (jobId) => this.reviewJob(jobId),
       getLoadedSkillNames: () => [...this.workspaceSkillNames],
       reloadRuntime: () => this.reloadAssistantRuntime(),
@@ -157,11 +241,13 @@ export class KroosbotApp {
 
       this.store.rememberMessageId(dedupeKey);
       this.store.appendUserMessage(message);
+      await this.persistConversationSnapshot(message.sessionKey);
 
       const memorySearchReply = await this.tryHandleMemorySearchCommand(message);
       if (memorySearchReply) {
         await this.sendReply(message, memorySearchReply);
         this.store.appendAssistantMessage(message.sessionKey, memorySearchReply.text);
+        await this.persistConversationSnapshot(message.sessionKey);
         return;
       }
 
@@ -169,6 +255,7 @@ export class KroosbotApp {
       if (memoryReply) {
         await this.sendReply(message, memoryReply);
         this.store.appendAssistantMessage(message.sessionKey, memoryReply.text);
+        await this.persistConversationSnapshot(message.sessionKey);
         return;
       }
 
@@ -176,6 +263,7 @@ export class KroosbotApp {
       if (toolsReply) {
         await this.sendReply(message, toolsReply);
         this.store.appendAssistantMessage(message.sessionKey, toolsReply.text);
+        await this.persistConversationSnapshot(message.sessionKey);
         return;
       }
 
@@ -183,6 +271,7 @@ export class KroosbotApp {
       if (agentReply) {
         await this.sendReply(message, agentReply);
         this.store.appendAssistantMessage(message.sessionKey, agentReply.text);
+        await this.persistConversationSnapshot(message.sessionKey);
         return;
       }
 
@@ -206,6 +295,7 @@ export class KroosbotApp {
 
       await this.sendReply(message, outbound);
       this.store.appendAssistantMessage(message.sessionKey, outbound.text);
+      await this.persistConversationSnapshot(message.sessionKey);
     } finally {
       this.activeInboundCount = Math.max(0, this.activeInboundCount - 1);
     }
@@ -313,9 +403,19 @@ export class KroosbotApp {
     const text = message.text.trim();
     const lower = text.toLowerCase();
 
+    const sessionReply = await this.tryHandleSessionCommand(message);
+    if (sessionReply) {
+      return sessionReply;
+    }
+
     const jobReply = await this.tryHandleJobCommand(message);
     if (jobReply) {
       return jobReply;
+    }
+
+    const taskReply = await this.tryHandleTaskCommand(message);
+    if (taskReply) {
+      return taskReply;
     }
 
     if (lower === "/tools") {
@@ -411,6 +511,64 @@ export class KroosbotApp {
     return {
       text: `Recent tool activity for ${message.sessionKey.toString()}:\n\n${lines.join("\n\n")}`
     };
+  }
+
+  private async tryHandleSessionCommand(
+    message: InboundMessage
+  ): Promise<{ text: string } | null> {
+    const text = message.text.trim();
+    const lower = text.toLowerCase();
+
+    if (lower === "/sessions") {
+      const sessions = this.runtime.listSessions(10);
+      if (sessions.length === 0) {
+        return { text: "No sessions found." };
+      }
+      return {
+        text: sessions.map((session, index) => [
+          `${index + 1}. ${session.key.toString()} [${session.origin.adapter}/${session.origin.chatKind}]`,
+          `  sender: ${(session.origin.senderName ?? session.origin.senderId) || "(unknown)"}`,
+          `  status: ${session.status}`,
+          `  last message: ${session.lastMessageAt ?? "(none)"}`
+        ].join("\n")).join("\n\n")
+      };
+    }
+
+    const historyMatch = text.match(/^\/session\s+history\s+(\S+)(?:\s+(\d+))?\s*$/i);
+    if (historyMatch) {
+      const sessionKey = historyMatch[1] ?? "";
+      const requestedCount = Number.parseInt(historyMatch[2] ?? "12", 10);
+      const limit = Number.isFinite(requestedCount)
+        ? Math.min(Math.max(requestedCount, 1), 50)
+        : 12;
+      const session = this.runtime.sessionFor(sessionKey);
+      if (!session) {
+        return { text: `Session not found: ${sessionKey}` };
+      }
+      const history = this.runtime.historyForSessionKey(sessionKey, limit);
+      if (history.turns.length === 0) {
+        return { text: `No history found for ${sessionKey}.` };
+      }
+      return {
+        text: [
+          `Session ${sessionKey}:`,
+          ...history.turns.map((turn, index) => `${index + 1}. ${turn.role}: ${clampText(turn.text, 500)}`)
+        ].join("\n")
+      };
+    }
+
+    const sendMatch = text.match(/^\/session\s+send\s+(\S+)\s+([\s\S]+)$/i);
+    if (sendMatch) {
+      const sessionKey = sendMatch[1] ?? "";
+      const outboundText = (sendMatch[2] ?? "").trim();
+      if (!outboundText) {
+        return { text: "Message text is required." };
+      }
+      await this.sendSessionMessage(sessionKey, outboundText);
+      return { text: `Sent a message to ${sessionKey}.` };
+    }
+
+    return null;
   }
 
   private async tryHandleAgentCommand(
@@ -635,6 +793,91 @@ export class KroosbotApp {
     }
   }
 
+  private async tryHandleTaskCommand(
+    message: InboundMessage
+  ): Promise<{ text: string } | null> {
+    const text = message.text.trim();
+    const lower = text.toLowerCase();
+
+    if (lower === "/tasks") {
+      const tasks = this.tasks.listTasks();
+      if (tasks.length === 0) {
+        return { text: "No scheduled tasks yet." };
+      }
+      return {
+        text: tasks.map((task) => {
+          const schedule =
+            task.scheduleType === "cron"
+              ? `cron ${task.cronExpr ?? "(missing)"}`
+              : task.scheduleType === "every"
+                ? `every ${task.intervalMs ?? 0}ms`
+                : `at ${task.runAt ?? "(missing)"}`;
+          return [
+            `**${task.id}** [${task.kind}/${task.status}]${task.isInternal ? " [internal]" : ""}`,
+            `  Schedule: ${schedule}`,
+            `  Next run: ${task.nextRunAt ?? "(none)"}`,
+            `  Target: ${task.sessionTarget}`,
+            `  Prompt: ${clampText(task.prompt, 120)}`
+          ].join("\n");
+        }).join("\n\n")
+      };
+    }
+
+    if (lower.startsWith("/task add ")) {
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(text.slice("/task add ".length).trim()) as Record<string, unknown>;
+      } catch {
+        return { text: "Invalid task payload. Use JSON like `{ \"scheduleType\":\"cron\", \"cronExpr\":\"*/5 * * * *\", \"prompt\":\"Check in\", \"sessionTarget\":\"current\" }`." };
+      }
+
+      const sessionTarget = resolveTaskSessionTarget(payload.sessionTarget, message.sessionKey.toString());
+      const task = this.tasks.createTask({
+        kind: parseTaskKind(payload.kind),
+        sessionTarget,
+        scheduleType: parseTaskScheduleType(payload.scheduleType),
+        runAt: optionalStringValue(payload.runAt),
+        intervalMs: optionalNumberValue(payload.intervalMs),
+        cronExpr: optionalStringValue(payload.cronExpr),
+        prompt: requiredStringValue(payload.prompt, "prompt"),
+        deliveryAdapter: optionalStringValue(payload.deliveryAdapter),
+        deliveryAddress: optionalStringValue(payload.deliveryAddress)
+      });
+      return {
+        text: `Created task ${task.id}.\nNext run: ${task.nextRunAt ?? "(none)"}`
+      };
+    }
+
+    const pauseMatch = text.match(/^\/task\s+pause\s+(\S+)\s*$/i);
+    if (pauseMatch) {
+      const task = this.tasks.pauseTask(pauseMatch[1] ?? "");
+      return { text: task ? `Paused task ${task.id}.` : "Task not found." };
+    }
+
+    const resumeMatch = text.match(/^\/task\s+resume\s+(\S+)\s*$/i);
+    if (resumeMatch) {
+      const task = this.tasks.resumeTask(resumeMatch[1] ?? "");
+      return { text: task ? `Resumed task ${task.id}. Next run: ${task.nextRunAt ?? "(none)"}` : "Task not found." };
+    }
+
+    const deleteMatch = text.match(/^\/task\s+delete\s+(\S+)\s*$/i);
+    if (deleteMatch) {
+      return { text: this.tasks.deleteTask(deleteMatch[1] ?? "") ? `Deleted task ${deleteMatch[1]}.` : "Task not found." };
+    }
+
+    const runMatch = text.match(/^\/task\s+run\s+(\S+)\s*$/i);
+    if (runMatch) {
+      const task = this.tasks.getTask(runMatch[1] ?? "");
+      if (!task) {
+        return { text: "Task not found." };
+      }
+      const result = await this.executeScheduledTask(task);
+      return { text: `Ran task ${task.id}: ${result}` };
+    }
+
+    return null;
+  }
+
   private async sendReply(message: InboundMessage, outbound: { text: string }): Promise<void> {
     console.info("sending reply", {
       adapter: message.deliveryTarget.adapter,
@@ -652,6 +895,17 @@ export class KroosbotApp {
     this.toolTrace.push(event);
     while (this.toolTrace.length > 200) {
       this.toolTrace.shift();
+    }
+  }
+
+  private async persistConversationSnapshot(sessionKey: SessionKey): Promise<void> {
+    try {
+      await this.conversations.writeSession(this.store.sessionFor(sessionKey));
+    } catch (error) {
+      console.warn("failed to persist conversation snapshot", {
+        session: sessionKey.toString(),
+        error
+      });
     }
   }
 
@@ -704,18 +958,82 @@ export class KroosbotApp {
     ].join("\n");
   }
 
-  private startHeartbeat(): void {
-    if (!this.config.initiative.enabled) return;
-    this.heartbeatTimer = setInterval(() => {
-      void this.runHeartbeat();
-    }, this.config.initiative.heartbeatIntervalMs);
-  }
-
-  private async runHeartbeat(): Promise<void> {
-    if (this.heartbeatRunning || this.activeInboundCount > 0) {
+  private installInternalTasks(): void {
+    const heartbeatPrompt = "Internal initiative heartbeat.";
+    if (!this.config.initiative.enabled) {
+      const existing = this.tasks.getTask(INTERNAL_INITIATIVE_TASK_ID);
+      if (existing) {
+        this.tasks.pauseTask(existing.id);
+      }
       return;
     }
-    this.heartbeatRunning = true;
+
+    const scheduleType = this.config.initiative.cron?.trim() ? "cron" : "every";
+    const task: ScheduledTaskInput & { id: string } = {
+      id: INTERNAL_INITIATIVE_TASK_ID,
+      kind: "heartbeat",
+      sessionTarget: "internal:initiative",
+      scheduleType,
+      intervalMs: scheduleType === "every" ? this.config.initiative.heartbeatIntervalMs : undefined,
+      cronExpr: scheduleType === "cron" ? this.config.initiative.cron?.trim() : undefined,
+      prompt: heartbeatPrompt,
+      status: "active",
+      isInternal: true
+    };
+    this.tasks.upsertTask(task);
+  }
+
+  private startScheduler(): void {
+    this.schedulerTimer = setInterval(() => {
+      void this.runScheduler();
+    }, 1000);
+  }
+
+  private async runScheduler(): Promise<void> {
+    if (this.schedulerRunning || this.activeInboundCount > 0) {
+      return;
+    }
+    this.schedulerRunning = true;
+    try {
+      const dueTasks = this.tasks.listDueTasks();
+      for (const task of dueTasks) {
+        await this.executeScheduledTask(task);
+      }
+    } catch (error) {
+      console.warn("scheduler run failed", error);
+    } finally {
+      this.schedulerRunning = false;
+    }
+  }
+
+  private async executeScheduledTask(task: ScheduledTaskRecord): Promise<string> {
+    try {
+      if (task.kind === "heartbeat") {
+        await this.runInitiativeHeartbeat();
+        this.tasks.recordRunResult(task, {
+          status: "ok",
+          resultText: "Initiative heartbeat completed."
+        });
+        return "Initiative heartbeat completed.";
+      }
+
+      const summary = await this.runPromptTask(task);
+      this.tasks.recordRunResult(task, {
+        status: "ok",
+        resultText: summary
+      });
+      return summary;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.tasks.recordRunResult(task, {
+        status: "error",
+        resultText: message
+      });
+      throw error;
+    }
+  }
+
+  private async runInitiativeHeartbeat(): Promise<void> {
     try {
       const jobs = await this.jobs.listJobs();
       for (const job of jobs) {
@@ -745,15 +1063,77 @@ export class KroosbotApp {
       }
     } catch (error) {
       console.warn("heartbeat run failed", error);
-    } finally {
-      this.heartbeatRunning = false;
     }
+  }
+
+  private async runPromptTask(task: ScheduledTaskRecord): Promise<string> {
+    const sessionKeyRaw = normalizeTaskSessionKey(task.sessionTarget);
+    const session = this.store.sessionFor(sessionKeyRaw);
+    if (!session) {
+      throw new Error(`Scheduled task target session not found: ${task.sessionTarget}`);
+    }
+    if (session.lastDelivery.adapter === "system" || !session.lastDelivery.address.trim()) {
+      throw new Error(`Scheduled task target session is not deliverable: ${task.sessionTarget}`);
+    }
+
+    const message: InboundMessage = {
+      adapter: session.lastDelivery.adapter,
+      chatKind: session.origin.chatKind,
+      messageId: `task-${task.id}-${Date.now()}`,
+      sessionKey: session.key,
+      conversationId: session.origin.conversationId,
+      threadId: session.origin.threadId,
+      deliveryTarget: session.lastDelivery,
+      senderId: "scheduler",
+      senderName: "Kroosbot Scheduler",
+      text: task.prompt
+    };
+
+    this.store.appendUserMessage(message);
+    await this.persistConversationSnapshot(session.key);
+    const history = this.store.historyFor(session.key);
+    const brain = this.agents.brainFor(session.key.toString());
+    const outbound = await brain.reply(message, history);
+    if (!outbound) {
+      return "Task produced no reply.";
+    }
+    await this.sendReply(message, outbound);
+    this.store.appendAssistantMessage(session.key, outbound.text);
+    await this.persistConversationSnapshot(session.key);
+    return clampText(outbound.text, 500);
+  }
+
+  private async sendSessionMessage(sessionKeyRaw: string, text: string): Promise<void> {
+    const session = this.store.sessionFor(sessionKeyRaw);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionKeyRaw}`);
+    }
+    if (session.lastDelivery.adapter === "system" || !session.lastDelivery.address.trim()) {
+      throw new Error(`Session ${sessionKeyRaw} does not have a deliverable chat target.`);
+    }
+
+    const syntheticMessage: InboundMessage = {
+      adapter: session.lastDelivery.adapter,
+      chatKind: session.origin.chatKind,
+      messageId: `send-${Date.now()}`,
+      sessionKey: session.key,
+      conversationId: session.origin.conversationId,
+      threadId: session.origin.threadId,
+      deliveryTarget: session.lastDelivery,
+      senderId: "main-assistant",
+      senderName: "Kroosbot",
+      text
+    };
+
+    await this.sendReply(syntheticMessage, { text });
+    this.store.appendAssistantMessage(session.key, text);
+    await this.persistConversationSnapshot(session.key);
   }
 
   private async notifyJobSession(sessionKeyRaw: string, text: string): Promise<void> {
     if (!sessionKeyRaw.trim()) return;
     const session = this.store.sessionFor(sessionKeyRaw);
-    if (!session) return;
+    if (!session || session.lastDelivery.adapter === "system" || !session.lastDelivery.address.trim()) return;
 
     const syntheticMessage: InboundMessage = {
       adapter: session.lastDelivery.adapter,
@@ -770,6 +1150,7 @@ export class KroosbotApp {
 
     await this.sendReply(syntheticMessage, { text });
     this.store.appendAssistantMessage(session.key, text);
+    await this.persistConversationSnapshot(session.key);
   }
 }
 
@@ -831,4 +1212,62 @@ function parseReviewDecision(raw: string): { decision: JobReviewDecision; summar
     decision: "request_changes",
     summary: trimmed || "Review output was not structured; defaulting to request_changes."
   };
+}
+
+const INTERNAL_INITIATIVE_TASK_ID = "internal-initiative-heartbeat";
+
+function resolveTaskSessionTarget(value: unknown, currentSessionKey: string): string {
+  const raw = typeof value === "string" ? value.trim() : "current";
+  if (!raw || raw.toLowerCase() === "current") {
+    return `session:${currentSessionKey}`;
+  }
+  if (raw.startsWith("session:")) {
+    return raw;
+  }
+  return `session:${raw}`;
+}
+
+function normalizeTaskSessionKey(target: string): string {
+  return target.startsWith("session:") ? target.slice("session:".length) : target;
+}
+
+function parseTaskScheduleType(value: unknown): "at" | "every" | "cron" {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "at" || raw === "every" || raw === "cron") {
+    return raw;
+  }
+  throw new Error('scheduleType must be one of "at", "every", or "cron".');
+}
+
+function parseTaskKind(value: unknown): "prompt" | "heartbeat" {
+  if (value === undefined) return "prompt";
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "prompt" || raw === "heartbeat") {
+    return raw;
+  }
+  throw new Error('kind must be either "prompt" or "heartbeat".');
+}
+
+function requiredStringValue(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${name} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function optionalStringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalNumberValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
 }

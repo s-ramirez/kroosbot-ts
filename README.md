@@ -30,12 +30,13 @@ bun run dev
 
 ## Structure
 
-- `src/store.ts`: normalized message/session model and in-memory store
+- `src/store.ts`: normalized message/session model and conversation facade over the runtime store
 - `src/memory/`: file-backed memory manager and search
 - `src/brain/`: brain implementations and prompt helpers
 - `src/adapters/`: Discord and iMessage adapters
 - `src/app.ts`: top-level orchestration and dispatch
 - `src/config.ts`: config loading and validation
+- `src/runtime-store/`: SQLite-backed runtime persistence for sessions, messages, plans, approvals, tasks, and job metadata
 - `SOUL.md`: workspace-level personality, boundaries, and initiative guidance
 - `HEARTBEAT.md`: workspace-level heartbeat intent
 - `skills/`: workspace skill packages with manifests, prompt files, and optional code handlers
@@ -220,19 +221,31 @@ The old `/delegate` and `/job ...` commands still exist as a fallback, but the p
 
 ## Initiative
 
-Kroosbot now has a small heartbeat loop intended to make it feel more alive without becoming noisy.
+Kroosbot now uses the scheduled task engine for initiative, so heartbeat behavior is just an internal task instead of a separate timer system.
 
-When `initiative.enabled` is on, the app periodically checks background jobs and can:
+When `initiative.enabled` is on, the app installs an internal scheduled task that checks background jobs and can:
 
 - automatically review jobs that reach `ready_for_review`
 - send a proactive message back to the original chat when a job is blocked
 - continue the review loop without waiting for a manual `/job review ...`
 
-The first-pass initiative config is:
+The current initiative config is:
 
 - `initiative.enabled`
 - `initiative.heartbeatIntervalMs`
+- `initiative.cron`
 - `initiative.autoReviewReadyJobs`
 - `initiative.notifyBlockedJobs`
 
-This is intentionally narrow. The heartbeat does not invent brand new work on its own yet; it only reacts to ongoing jobs and review state.
+If `initiative.cron` is set, Kroosbot uses that cron expression for scheduling. Otherwise it falls back to `initiative.heartbeatIntervalMs`.
+
+This is intentionally narrow. Initiative does not invent brand new work on its own yet; it only reacts to ongoing jobs and review state.
+
+The operator task surface is also available:
+
+- `/tasks`
+- `/task add <json>`
+- `/task pause <id>`
+- `/task resume <id>`
+- `/task delete <id>`
+- `/task run <id>`

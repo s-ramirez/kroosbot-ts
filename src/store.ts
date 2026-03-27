@@ -1,4 +1,7 @@
+import { RuntimeStore } from "./runtime-store/store.js";
+
 export type AdapterKind = "discord" | "imessage";
+export type SessionAdapterKind = AdapterKind | "system";
 export type ChatKind = "direct" | "group" | "channel";
 
 export class SessionKey {
@@ -23,7 +26,7 @@ export class SessionKey {
 }
 
 export type DeliveryTarget = {
-  adapter: AdapterKind;
+  adapter: SessionAdapterKind;
   address: string;
   threadId?: string;
 };
@@ -76,7 +79,7 @@ type SessionState = {
 export type SessionSnapshot = {
   key: SessionKey;
   origin: {
-    adapter: AdapterKind;
+    adapter: SessionAdapterKind;
     chatKind: ChatKind;
     conversationLabel?: string;
     senderId: string;
@@ -86,6 +89,24 @@ export type SessionSnapshot = {
   };
   lastDelivery: DeliveryTarget;
   history: ChatHistory;
+};
+
+export type SessionSummary = {
+  key: SessionKey;
+  origin: {
+    adapter: SessionAdapterKind;
+    chatKind: ChatKind;
+    conversationLabel?: string;
+    senderId: string;
+    senderName?: string;
+    conversationId: string;
+    threadId?: string;
+  };
+  lastDelivery: DeliveryTarget;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt?: string;
 };
 
 export class IdentityMap {
@@ -103,85 +124,41 @@ export class IdentityMap {
 }
 
 export class ConversationStore {
-  private readonly sessions = new Map<string, SessionState>();
-  private readonly seenIds = new Set<string>();
-  private readonly seenQueue: string[] = [];
-
-  constructor(private readonly historyLimit: number) {}
+  constructor(
+    private readonly runtime: RuntimeStore,
+    private readonly historyLimit: number
+  ) {}
 
   isDuplicate(dedupeKey: string): boolean {
-    return this.seenIds.has(dedupeKey);
+    const [adapter, ...rest] = dedupeKey.split(":");
+    const externalMessageId = rest.join(":");
+    if (!adapter || !externalMessageId) return false;
+    return this.runtime.hasInboundMessage(adapter, externalMessageId);
   }
 
   rememberMessageId(dedupeKey: string): void {
-    if (this.seenIds.has(dedupeKey)) return;
-    this.seenIds.add(dedupeKey);
-    this.seenQueue.push(dedupeKey);
-    while (this.seenQueue.length > 1024) {
-      const evicted = this.seenQueue.shift();
-      if (evicted) this.seenIds.delete(evicted);
-    }
+    void dedupeKey;
   }
 
   historyFor(sessionKey: SessionKey): ChatHistory {
-    return this.sessions.get(sessionKey.toString())?.history ?? { turns: [] };
+    return this.runtime.historyForSession(sessionKey, this.historyLimit);
   }
 
   sessionFor(sessionKey: SessionKey | string): SessionSnapshot | null {
     const key = typeof sessionKey === "string" ? sessionKey : sessionKey.toString();
-    const session = this.sessions.get(key);
-    if (!session) return null;
-    return {
-      key: session.key,
-      origin: { ...session.origin },
-      lastDelivery: { ...session.lastDelivery },
-      history: {
-        turns: [...session.history.turns]
-      }
-    };
+    return this.runtime.sessionFor(key);
   }
 
   appendUserMessage(message: InboundMessage): void {
-    this.upsertSession(message);
-    this.appendTurn(message.sessionKey, { role: "user", text: message.text });
+    this.runtime.appendInboundMessage(message);
   }
 
   appendAssistantMessage(sessionKey: SessionKey, text: string): void {
-    this.appendTurn(sessionKey, { role: "assistant", text });
+    this.runtime.appendAssistantMessage(sessionKey, text);
   }
 
   static dedupeKey(message: InboundMessage): string {
     return `${message.adapter}:${normalize(message.messageId)}`;
-  }
-
-  private upsertSession(message: InboundMessage): void {
-    const key = message.sessionKey.toString();
-    const existing = this.sessions.get(key);
-    const next: SessionState = {
-      key: message.sessionKey,
-      origin: {
-        adapter: message.adapter,
-        chatKind: message.chatKind,
-        conversationLabel: message.senderName,
-        senderId: message.senderId,
-        senderName: message.senderName,
-        conversationId: message.conversationId,
-        threadId: message.threadId
-      },
-      lastDelivery: message.deliveryTarget,
-      history: existing?.history ?? { turns: [] }
-    };
-    this.sessions.set(key, next);
-  }
-
-  private appendTurn(sessionKey: SessionKey, turn: ChatTurn): void {
-    const key = sessionKey.toString();
-    const session = this.sessions.get(key);
-    if (!session) return;
-    session.history.turns.push(turn);
-    if (session.history.turns.length > this.historyLimit) {
-      session.history.turns.splice(0, session.history.turns.length - this.historyLimit);
-    }
   }
 }
 

@@ -3,6 +3,7 @@ import type { AppConfig } from "../config.js";
 import type { JobSupervisor } from "../jobs/supervisor.js";
 import type { MemoryManager } from "../memory/manager.js";
 import type { PlanManager } from "../plans/manager.js";
+import type { RuntimeStore } from "../runtime-store/store.js";
 import { createPiTools } from "./piTools.js";
 import type {
   PendingToolApproval,
@@ -14,10 +15,11 @@ import type {
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
-  private readonly pendingApprovals = new Map<string, PendingToolApproval>();
-  private nextApprovalId = 1;
 
-  constructor(tools: Tool[]) {
+  constructor(
+    tools: Tool[],
+    private readonly runtime: RuntimeStore
+  ) {
     for (const tool of tools) {
       this.tools.set(tool.definition.name, tool);
     }
@@ -26,9 +28,11 @@ export class ToolRegistry {
   static createBuiltIn(
     config: AppConfig,
     memory: MemoryManager,
-    options?: {
+    options: {
       jobs?: JobSupervisor;
       plans?: PlanManager;
+      runtime: RuntimeStore;
+      sendSessionMessage?: (params: { sessionKey: string; text: string; sourceSessionKey: string }) => Promise<void>;
       reviewJob?: (jobId: string) => Promise<string>;
       getLoadedSkillNames?: () => string[];
       reloadRuntime?: () => Promise<void>;
@@ -36,7 +40,7 @@ export class ToolRegistry {
       extraTools?: Tool[];
     }
   ): ToolRegistry {
-    return new ToolRegistry(createPiTools(config, memory, options));
+    return new ToolRegistry(createPiTools(config, memory, options), options.runtime);
   }
 
   definitions(): ToolDefinition[] {
@@ -58,7 +62,11 @@ export class ToolRegistry {
     }
 
     if ((tool.definition.approvalMode ?? "none") === "always") {
-      const pending = this.createPendingApproval(name, args, context);
+      const pending = this.runtime.createApproval({
+        sessionKey: context.sessionKey,
+        toolName: name,
+        arguments: args
+      });
       return {
         ok: false,
         requiresApproval: true,
@@ -78,25 +86,21 @@ export class ToolRegistry {
   }
 
   listPendingApprovals(sessionKey?: string): PendingToolApproval[] {
-    const values = [...this.pendingApprovals.values()];
-    return values
-      .filter((entry) => !sessionKey || entry.sessionKey === sessionKey)
-      .sort((a, b) => a.id.localeCompare(b.id));
+    return this.runtime.listPendingApprovals(sessionKey);
   }
 
   async approve(id: string): Promise<ToolExecutionResult & { toolName: string }> {
-    const pending = this.pendingApprovals.get(id);
+    const pending = this.runtime.resolveApproval(id, "approved");
     if (!pending) {
       return { ok: false, toolName: "unknown", content: `No pending approval found for ${id}.` };
     }
 
     const tool = this.tools.get(pending.toolName);
     if (!tool) {
-      this.pendingApprovals.delete(id);
+      this.runtime.resolveApproval(id, "expired");
       return { ok: false, toolName: pending.toolName, content: `Tool no longer exists: ${pending.toolName}` };
     }
 
-    this.pendingApprovals.delete(id);
     try {
       const result = await tool.execute(pending.arguments, { sessionKey: pending.sessionKey });
       return { ...result, toolName: pending.toolName };
@@ -110,35 +114,6 @@ export class ToolRegistry {
   }
 
   deny(id: string): PendingToolApproval | null {
-    const pending = this.pendingApprovals.get(id) ?? null;
-    if (pending) {
-      this.pendingApprovals.delete(id);
-    }
-    return pending;
-  }
-
-  private createPendingApproval(
-    toolName: string,
-    args: Record<string, unknown>,
-    context: ToolExecutionContext
-  ): PendingToolApproval {
-    const existing = [...this.pendingApprovals.values()].find((entry) =>
-      entry.sessionKey === context.sessionKey &&
-      entry.toolName === toolName &&
-      JSON.stringify(entry.arguments) === JSON.stringify(args)
-    );
-    if (existing) {
-      return existing;
-    }
-
-    const approval: PendingToolApproval = {
-      id: String(this.nextApprovalId++),
-      sessionKey: context.sessionKey,
-      toolName,
-      arguments: args,
-      requestedAt: new Date().toISOString()
-    };
-    this.pendingApprovals.set(approval.id, approval);
-    return approval;
+    return this.runtime.resolveApproval(id, "denied");
   }
 }

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { AppConfig } from "../config.js";
+import type { RuntimeStore } from "../runtime-store/store.js";
 import { createJobWorktree, getChangedFiles, getDiff, getDiffStat, getStatusShort, removeJobWorktree, resetWorktreeToBase, resolveBaseBranch, resolveBaseCommit } from "./git.js";
 import { JobStore } from "./store.js";
 import type { JobDelegatePayload, JobRecord, JobReviewDecision, JobReviewOutcome, JobStatus } from "./types.js";
@@ -21,8 +22,8 @@ export class JobSupervisor {
     timeZoneName: "short"
   });
 
-  constructor(private readonly config: AppConfig) {
-    this.store = new JobStore(path.resolve(config.jobs.rootDir));
+  constructor(private readonly config: AppConfig, runtime?: RuntimeStore) {
+    this.store = new JobStore(path.resolve(config.jobs.rootDir), runtime);
   }
 
   async initialize(): Promise<void> {

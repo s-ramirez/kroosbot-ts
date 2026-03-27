@@ -1,10 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { SubagentConfig } from "../config.js";
+import type { RuntimeStore } from "../runtime-store/store.js";
 import type { SubagentDefinition } from "./types.js";
 
 export class AgentStore {
-  constructor(private readonly rootDir: string) {}
+  constructor(
+    private readonly rootDir: string,
+    private readonly runtime: RuntimeStore
+  ) {}
 
   async initialize(seed: SubagentConfig[]): Promise<void> {
     await fs.mkdir(this.rootDir, { recursive: true });
@@ -32,33 +36,21 @@ export class AgentStore {
   }
 
   async list(): Promise<SubagentDefinition[]> {
-    const entries = await fs.readdir(this.rootDir, { withFileTypes: true }).catch(() => []);
-    const agents: SubagentDefinition[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const def = await this.get(entry.name);
-      if (def) agents.push(def);
-    }
-    return agents;
+    return this.runtime.listAgents();
   }
 
   async get(id: string): Promise<SubagentDefinition | null> {
-    const filePath = this.agentJsonPath(id);
-    try {
-      const raw = await fs.readFile(filePath, "utf8");
-      return JSON.parse(raw) as SubagentDefinition;
-    } catch {
-      return null;
-    }
+    return this.runtime.getAgent(id);
   }
 
   async save(def: SubagentDefinition): Promise<void> {
     const dir = this.agentDir(def.id);
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(this.agentJsonPath(def.id), JSON.stringify(def, null, 2), "utf8");
+    this.runtime.saveAgent(def);
   }
 
   async delete(id: string): Promise<void> {
+    this.runtime.deleteAgent(id);
     const dir = this.agentDir(id);
     await fs.rm(dir, { recursive: true, force: true });
   }

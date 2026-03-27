@@ -4,7 +4,7 @@ Tools are registered in a `ToolRegistry` (`src/tools/registry.ts`) and exposed t
 
 ## Tool Approval
 
-Tools can have `approvalMode: "always"`, which means execution creates a `PendingToolApproval` instead of running immediately. The user must run `/approve <id>` or `/deny <id>` to complete the action. Currently only `memory_write` uses this.
+Tools can have `approvalMode: "always"`, which means execution creates a `PendingToolApproval` instead of running immediately. The user must run `/approve <id>` or `/deny <id>` to complete the action. High-impact actions like `memory_write` and proactive `send_message` use this.
 
 ## Built-in Tools
 
@@ -14,6 +14,14 @@ Tools can have `approvalMode: "always"`, which means execution creates a `Pendin
 |------|-------------|
 | `memory_search` | Keyword search against MEMORY.md + memory/*.md files |
 | `memory_write` | Append a durable note to memory (requires approval) |
+
+### Session Tools (`src/tools/sessionTools.ts`)
+
+| Tool | Description |
+|------|-------------|
+| `list_sessions` | List recent chat sessions and their routing metadata |
+| `session_history` | Show recent turns from a target session |
+| `send_message` | Send a proactive assistant message into a session (requires approval) |
 
 ### Coding Tools (`src/tools/codingTools.ts`)
 
@@ -69,3 +77,15 @@ Tools can have `approvalMode: "always"`, which means execution creates a `Pendin
 1. Create a factory function in `src/tools/` that returns `Tool[]`
 2. Register tools via `ToolRegistry.createBuiltIn()` in `src/tools/piTools.ts`
 3. Tools are automatically exposed to both brain modes (MCP for agent-sdk, text descriptions for openai-compatible)
+
+## Operator Surface
+
+The app also exposes lightweight session controls outside the model loop:
+
+- `/sessions`
+- `/session history <session-key> [limit]`
+- `/session send <session-key> <text>`
+- `GET /sessions`
+- `GET /sessions/:sessionKey`
+- `GET /sessions/:sessionKey/history?limit=20`
+- `POST /sessions/:sessionKey/messages` with `{ "text": "..." }`

@@ -8,6 +8,7 @@
     "build": "bunx tsc -p tsconfig.json",
     "dev": "bun --watch src/index.ts",
     "start": "bun dist/index.js",
+    "test": "bun test",
     "evals": "bun src/evals/cli.ts",
     "worker": "bun src/jobs/worker.ts"
   },

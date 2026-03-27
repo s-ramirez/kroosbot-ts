@@ -70,10 +70,18 @@ cp config.example.json config.json
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | boolean | Enable heartbeat loop |
-| `heartbeatIntervalMs` | number | Heartbeat interval |
+| `enabled` | boolean | Enable the internal initiative scheduled task |
+| `heartbeatIntervalMs` | number | Fallback fixed interval when `cron` is not set |
+| `cron` | string | Optional 5-field cron expression for initiative scheduling |
 | `autoReviewReadyJobs` | boolean | Auto-review completed jobs |
 | `notifyBlockedJobs` | boolean | Notify on blocked jobs |
+
+### `runtimeStore`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Enable SQLite-backed runtime persistence |
+| `dbPath` | string | Path to the runtime SQLite database |
 
 ### `jobs`
 
