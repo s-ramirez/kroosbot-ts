@@ -11,6 +11,7 @@ import { MemoryManager } from "./memory/manager.js";
 import { ConversationStore, SessionKey, type InboundMessage } from "./store.js";
 import { JobSupervisor } from "./jobs/supervisor.js";
 import type { JobDelegatePayload, JobReviewDecision } from "./jobs/types.js";
+import { FitnessStore } from "./fitness/store.js";
 import { PlanManager } from "./plans/manager.js";
 import { loadWorkspaceSkills } from "./skills/loader.js";
 import { createCoreSkills } from "./skills/registry.js";
@@ -21,6 +22,7 @@ import { RuntimeStore } from "./runtime-store/store.js";
 import { SubagentManager } from "./agents/manager.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { ConversationLogger } from "./conversations/logger.js";
+import { createFitnessTools } from "./tools/fitnessTools.js";
 
 export class KroosbotApp {
   private readonly store: ConversationStore;
@@ -28,6 +30,7 @@ export class KroosbotApp {
   private readonly runtime: RuntimeStore;
   private brain!: Brain;
   private readonly memory: MemoryManager;
+  private readonly fitness: FitnessStore;
   private tools!: ToolRegistry;
   private agents!: SubagentManager;
   private readonly jobs: JobSupervisor;
@@ -49,6 +52,7 @@ export class KroosbotApp {
     this.store = new ConversationStore(this.runtime, config.app.historyLimit);
     this.conversations = new ConversationLogger(config.conversations);
     this.memory = new MemoryManager(config.memory);
+    this.fitness = new FitnessStore(config.fitness);
     this.jobs = new JobSupervisor(config, this.runtime);
     this.plans = new PlanManager(this.runtime);
     this.tasks = new ScheduledTaskManager(this.runtime);
@@ -60,6 +64,7 @@ export class KroosbotApp {
   async start(): Promise<void> {
     this.runtime.initialize();
     await this.memory.initialize();
+    await this.fitness.initialize();
     await this.conversations.initialize();
     await this.jobs.initialize();
     await this.initializeAssistantRuntime();
@@ -200,7 +205,10 @@ export class KroosbotApp {
       getLoadedSkillNames: () => [...this.workspaceSkillNames],
       reloadRuntime: () => this.reloadAssistantRuntime(),
       agents: this.config.agents.enabled ? this.agents : undefined,
-      extraTools: workspaceSkills.flatMap((skill) => skill.tools)
+      extraTools: [
+        ...(this.fitness.enabled ? createFitnessTools(this.fitness) : []),
+        ...workspaceSkills.flatMap((skill) => skill.tools)
+      ]
     });
     this.brain =
       this.config.brain.mode === "echo"

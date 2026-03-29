@@ -46,6 +46,11 @@
     "autoReviewReadyJobs": true,
     "notifyBlockedJobs": true
   },
+  "fitness": {
+    "enabled": true,
+    "rootDir": "./kroosbot-data/fitness",
+    "defaultTimezone": "America/Chicago"
+  },
   "conversations": {
     "enabled": true,
     "rootDir": "./kroosbot-data/conversations",

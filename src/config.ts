@@ -67,6 +67,14 @@ const initiativeSchema = z.object({
   notifyBlockedJobs: z.boolean().default(true)
 });
 
+const resolvedDefaultTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+const fitnessSchema = z.object({
+  enabled: z.boolean().default(true),
+  rootDir: z.string().default("./kroosbot-data/fitness"),
+  defaultTimezone: z.string().default(resolvedDefaultTimeZone)
+});
+
 const conversationsSchema = z.object({
   enabled: z.boolean().default(true),
   rootDir: z.string().default("./kroosbot-data/conversations"),
@@ -109,6 +117,7 @@ const schema = z.object({
   }),
   agents: agentsSchema.default({}),
   initiative: initiativeSchema.default({}),
+  fitness: fitnessSchema.default({}),
   conversations: conversationsSchema.default({}),
   runtimeStore: runtimeStoreSchema.default({}),
   jobs: jobsSchema.default({}),

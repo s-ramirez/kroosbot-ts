@@ -1,0 +1,5 @@
+{
+  "name": "fitness_coach",
+  "description": "Support meal logging, calorie tracking, and gentle daily fitness check-ins.",
+  "enabled": true
+}

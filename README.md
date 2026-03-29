@@ -32,6 +32,7 @@ bun run dev
 
 - `src/store.ts`: normalized message/session model and conversation facade over the runtime store
 - `src/memory/`: file-backed memory manager and search
+- `src/fitness/`: optional structured fitness profile + daily meal log storage
 - `src/brain/`: brain implementations and prompt helpers
 - `src/adapters/`: Discord and iMessage adapters
 - `src/app.ts`: top-level orchestration and dispatch
@@ -83,6 +84,8 @@ This gives the app a path toward agent-authored skills without requiring changes
 
 See `skills/README.md` for the package format, and `skills/_template-imposter-game/` for a starter template.
 
+This is also the preferred path for bot-specific capabilities that should not become universal product features. A workspace skill can define behavior and optional tools for one bot without changing the core assistant model for every workspace.
+
 ## Tools
 
 This version now includes a small `pi-tools`-style built-in tool framework.
@@ -91,15 +94,25 @@ Current tools:
 
 - `memory_search`
 - `memory_write`
+- `list_sessions`
+- `session_history`
+- `send_message`
 - `list_files`
 - `search_files`
 - `read_file`
+- `set_fitness_profile`
+- `get_fitness_profile`
+- `log_meal`
+- `get_daily_nutrition`
+- `get_missing_meals`
 
 The tools are intentionally narrow:
 
 - memory tools can search and append durable notes
+- session tools can inspect recent chat sessions and send proactive messages with approval
 - file tools are read-only
 - file tools are scoped to `app.workspaceDir`
+- fitness tools are structured and optional; they are meant for bot-specific workflows rather than generic chat memory
 - tools are composed through a small builder in `src/tools/piTools.ts`
 
 Debug commands:
@@ -122,6 +135,64 @@ Memory behavior:
 - obvious preferences and decisions can still be auto-captured by app-side rules
 - the model is now also instructed to propose `memory_write` for durable facts worth keeping
 - `memory_write` stays approval-gated, so the model can suggest a memory without silently storing it
+
+## Bot-Specific Capabilities
+
+Kroosbot can be extended in a workspace-specific way without turning every idea into a core feature.
+
+The intended layering is:
+
+- `SOUL.md` for tone, boundaries, and high-level behavior
+- workspace skills under `skills/` for domain-specific instructions
+- optional code-backed tools for structured state or external actions
+- scheduled tasks for proactive check-ins and reminders
+
+This is the recommended path for personal workflows like meal logging, recurring check-ins, or niche assistant behaviors that should belong to your bot rather than to Kroosbot as a whole.
+
+## Fitness Tracking Example
+
+This repo now includes a lightweight example of that pattern through the `fitness_coach` workspace skill and a small structured fitness store.
+
+The fitness extension is intentionally workspace-local rather than a universal product concept:
+
+- profile data lives under `fitness.rootDir/profile.json`
+- day-by-day meal logs live under `fitness.rootDir/days/YYYY-MM-DD.json`
+- the bot uses structured tools for meal entries and daily totals instead of relying on memory notes
+- memory is still appropriate for durable preferences and goals, but not as the meal ledger itself
+
+Available fitness tools:
+
+- `set_fitness_profile`
+- `get_fitness_profile`
+- `log_meal`
+- `get_daily_nutrition`
+- `get_missing_meals`
+
+Recommended usage:
+
+- tell the bot your fitness profile in normal conversation and let it call `set_fitness_profile`
+- use scheduled tasks for breakfast/lunch/dinner/evening check-ins
+- have scheduled prompts call `get_missing_meals` or `get_daily_nutrition` before asking follow-up questions
+
+Example profile setup message:
+
+```text
+For fitness tracking, set my profile to timezone America/Chicago, calorie target 2200, protein target 180, and expected meals breakfast, lunch, dinner, snack.
+```
+
+Example scheduled task:
+
+```text
+/task add {"scheduleType":"cron","cronExpr":"0 8 * * *","prompt":"Check whether breakfast has been logged for today. If not, ask what I ate and log it with the fitness tools. If calories are unclear, ask one short follow-up or mark the entry as estimated.","sessionTarget":"current"}
+```
+
+Config:
+
+- `fitness.enabled`
+- `fitness.rootDir`
+- `fitness.defaultTimezone`
+
+This pattern is a good template for other personal assistant domains: keep the framework generic, and put the specialized workflow in workspace skills plus optional structured tools.
 
 ## Evals
 
